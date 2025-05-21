@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "version": "1.0.0",
+  "name": "egdata extension",
+  "description": "egdata extension",
+  "background": {
+    "service_worker": "static/js/background.js"
+  },
+  "action": {
+    "default_title": "egdata extension"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.egdata.app/*",
+        "*://*.epicgames.com/*",
+        "*://localhost/*"
+      ],
+      "js": ["static/js/contentScript.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["*"],
+      "matches": ["https://*/*"]
+    }
+  ],
+  "permissions": ["cookies", "storage", "alarms"],
+  "host_permissions": [
+    "https://store.epicgames.com/*",
+    "https://*.epicgames.com/*",
+    "https://*.egdata.app/*",
+    "http://localhost/*"
+  ]
+}
