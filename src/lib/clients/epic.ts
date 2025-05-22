@@ -2,17 +2,17 @@ import {
   ApolloClient,
   InMemoryCache,
   type NormalizedCacheObject,
-} from "@apollo/client";
-import consola from "consola";
+} from '@apollo/client';
+import consola from 'consola';
 
 export class EpicGamesGraphQLClient {
   public client: ApolloClient<NormalizedCacheObject>;
-  private logger = consola.withTag("epic-client");
+  private logger = consola.withTag('epic-client');
 
   constructor({ token }: { token: string }) {
-    this.logger.info("Initializing Epic Games GraphQL client");
+    this.logger.info('Initializing Epic Games GraphQL client');
     this.client = new ApolloClient({
-      uri: "https://store.epicgames.com/graphql",
+      uri: 'https://store.epicgames.com/graphql',
       cache: new InMemoryCache(),
       headers: {
         Authorization: `Bearer ${token}`,
@@ -39,7 +39,7 @@ export class EpicGamesGraphQLClient {
     platform?: string;
     includeCategories?: string[];
   }) {
-    this.logger.info("Getting Epic Games library", {
+    this.logger.info('Getting Epic Games library', {
       includeMetadata,
       cursor,
       excludeNs,
@@ -51,66 +51,71 @@ export class EpicGamesGraphQLClient {
 
     try {
       if (!token) {
-        this.logger.error("No token found");
-        throw new Error("No token found");
+        this.logger.error('No token found');
+        throw new Error('No token found');
       }
 
       const url = new URL(
-        "https://library-service.live.use1a.on.epicgames.com/library/api/public/items"
+        'https://library-service.live.use1a.on.epicgames.com/library/api/public/items',
       );
 
       if (includeMetadata) {
-        url.searchParams.set("includeMetadata", "true");
+        url.searchParams.set('includeMetadata', 'true');
       }
 
       if (cursor) {
-        url.searchParams.set("cursor", cursor);
+        url.searchParams.set('cursor', cursor);
       }
 
       if (excludeNs) {
         for (const ns of excludeNs) {
-          url.searchParams.append("excludeNs", ns);
+          url.searchParams.append('excludeNs', ns);
         }
       }
 
       if (includeNs) {
         for (const ns of includeNs) {
-          url.searchParams.append("includeNs", ns);
+          url.searchParams.append('includeNs', ns);
         }
       }
 
       if (limit) {
-        url.searchParams.set("limit", limit.toString());
+        url.searchParams.set('limit', limit.toString());
       }
 
       if (platform) {
-        url.searchParams.set("platform", platform);
+        url.searchParams.set('platform', platform);
       }
 
       if (includeCategories) {
         for (const category of includeCategories) {
-          url.searchParams.append("includeCategories", category);
+          url.searchParams.append('includeCategories', category);
         }
       }
 
-      this.logger.info("Epic Games library URL", url);
+      this.logger.info('Epic Games library URL', url);
 
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       }).catch((error) => {
-        this.logger.error("Error fetching Epic Games library:", error);
+        this.logger.error('Error fetching Epic Games library:', error);
         throw error;
       });
 
       const data = await response.json();
 
-      this.logger.info("Epic Games library data", data);
+      this.logger.info('Epic Games library data', {
+        hasItems: !!data.items,
+        itemsLength: data.items?.length,
+        dataKeys: Object.keys(data),
+        firstItem: data.items?.[0],
+      });
 
       return data;
     } catch (error) {
-      this.logger.error("Error getting Epic Games library:", error);
+      this.logger.error('Error getting Epic Games library:', error);
       throw error;
     }
   }

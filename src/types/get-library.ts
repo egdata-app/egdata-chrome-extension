@@ -38,28 +38,23 @@ export interface LibraryItem {
 }
 
 export interface LibraryResponse {
-  items: LibraryItem[];
-  paging: {
-    count: number;
-    start: number;
-    total: number;
-  };
+  records: Record[];
+  responseMetadata: ResponseMetadata;
 }
-  
+
 export interface ResponseMetadata {
-  nextCursor: string
-  stateToken: string
+  nextCursor: string;
+  stateToken: string;
 }
-  
+
 export interface Record {
-  namespace: string
-  catalogItemId: string
-  appName: string
-  productId: string
-  sandboxName: string
-  sandboxType: string
-  recordType: string
-  acquisitionDate: string
-  dependencies: any[]
+  namespace: string;
+  catalogItemId: string;
+  appName: string;
+  productId: string;
+  sandboxName: string;
+  sandboxType: string;
+  recordType: string;
+  acquisitionDate: string;
+  dependencies: any[];
 }
-  

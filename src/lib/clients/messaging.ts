@@ -36,9 +36,11 @@ export class MessagingClient {
     return response.token;
   }
 
-  async getLibrary({ cursor }: { cursor?: string } = {}): Promise<LibraryResponse> {
+  async getLibrary({
+    cursor,
+  }: { cursor?: string } = {}): Promise<LibraryResponse> {
     const response = await this.sendMessage<
-      { library: unknown } | { error: string }
+      { library: LibraryResponse } | { error: string }
     >({
       action: 'getLibrary',
       payload: { cursor, excludeNs: ['ue'] },
@@ -53,7 +55,11 @@ export class MessagingClient {
       throw new Error(response.error);
     }
 
-    return response.library as LibraryResponse;
+    if (!response.library?.items) {
+      throw new Error('Invalid library response: missing items array');
+    }
+
+    return response.library;
   }
 }
 
