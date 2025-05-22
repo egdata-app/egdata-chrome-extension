@@ -37,7 +37,27 @@ chrome.action.onClicked.addListener(() => {
 // Handle automatic activation when extension is installed or updated
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install' || details.reason === 'update') {
-    chrome.tabs.create({ url: 'main.html' });
+    // Open a tab with Epic Games Store, wait for it to load, then close the tab
+    chrome.tabs.create({ url: 'https://store.epicgames.com' }, (tab) => {
+      if (tab.id) {
+        const tabId = tab.id;
+        const listener = (
+          updatedTabId: number,
+          changeInfo: chrome.tabs.TabChangeInfo,
+        ) => {
+          if (updatedTabId === tabId && changeInfo.status === 'complete') {
+            // Remove the listener first to prevent any race conditions
+            chrome.tabs.onUpdated.removeListener(listener);
+            // Close the Epic Games Store tab
+            chrome.tabs.remove(tabId);
+            // Open the main extension page
+            chrome.tabs.create({ url: 'main.html' });
+          }
+        };
+        // Add the listener
+        chrome.tabs.onUpdated.addListener(listener);
+      }
+    });
   }
 });
 
