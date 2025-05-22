@@ -1,5 +1,6 @@
 import consola from 'consola';
 import { EpicGamesGraphQLClient } from '../lib/clients/epic';
+import { librarySyncService } from '../lib/services/library-sync';
 
 const logger = consola.withTag('background');
 
@@ -26,8 +27,59 @@ async function initializeEpicClient() {
   }
 }
 
-// Initialize client when extension starts
-initializeEpicClient();
+// Fetch library data from Epic Games
+async function fetchLibraryData() {
+  try {
+    if (!epicClient) {
+      logger.warn(
+        'Epic Games client not initialized, attempting to initialize...',
+      );
+      await initializeEpicClient();
+
+      if (!epicClient) {
+        throw new Error('Failed to initialize Epic Games client');
+      }
+    }
+
+    const authCookie = await chrome.cookies.get({
+      name: 'EPIC_EG1',
+      url: 'https://store.epicgames.com',
+    });
+
+    if (!authCookie?.value) {
+      throw new Error('Epic Games authentication cookie not found');
+    }
+
+    logger.info('Fetching library data...');
+    const library = await epicClient.getLibrary({
+      token: authCookie.value,
+      includeMetadata: true,
+    });
+
+    return library;
+  } catch (error) {
+    logger.error('Error fetching library data:', error);
+    throw error;
+  }
+}
+
+// Start periodic sync when extension is activated
+async function startLibrarySync() {
+  try {
+    const library = await fetchLibraryData();
+    librarySyncService.startPeriodicSync(library);
+  } catch (error) {
+    logger.error('Failed to start library sync:', error);
+  }
+}
+
+// Initialize client and start sync when extension starts
+chrome.runtime.onStartup.addListener(async () => {
+  logger.info('Extension started');
+  await initializeEpicClient();
+  await startLibrarySync();
+  await chrome.tabs.create({ url: 'main.html' });
+});
 
 // Handle manual activation (when user clicks the extension icon)
 chrome.action.onClicked.addListener(() => {
@@ -35,13 +87,13 @@ chrome.action.onClicked.addListener(() => {
 });
 
 // Handle automatic activation when extension is installed or updated
-chrome.runtime.onInstalled.addListener((details) => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install' || details.reason === 'update') {
     // Open a tab with Epic Games Store, wait for it to load, then close the tab
-    chrome.tabs.create({ url: 'https://store.epicgames.com' }, (tab) => {
+    chrome.tabs.create({ url: 'https://store.epicgames.com' }, async (tab) => {
       if (tab.id) {
         const tabId = tab.id;
-        const listener = (
+        const listener = async (
           updatedTabId: number,
           changeInfo: chrome.tabs.TabChangeInfo,
         ) => {
@@ -52,6 +104,7 @@ chrome.runtime.onInstalled.addListener((details) => {
             chrome.tabs.remove(tabId);
             // Open the main extension page
             chrome.tabs.create({ url: 'main.html' });
+            await startLibrarySync();
           }
         };
         // Add the listener
@@ -59,13 +112,6 @@ chrome.runtime.onInstalled.addListener((details) => {
       }
     });
   }
-});
-
-// Handle automatic activation when browser starts
-chrome.runtime.onStartup.addListener(async () => {
-  logger.info('Extension started');
-  await initializeEpicClient();
-  await chrome.tabs.create({ url: 'main.html' });
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -104,38 +150,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Return true to indicate we'll send the response asynchronously
     (async () => {
       try {
-        if (!epicClient) {
-          logger.warn(
-            'Epic Games client not initialized, attempting to initialize...',
-          );
-          await initializeEpicClient();
-
-          if (!epicClient) {
-            throw new Error('Failed to initialize Epic Games client');
-          }
-        }
-
-        const authCookie = await chrome.cookies.get({
-          name: 'EPIC_EG1',
-          url: 'https://store.epicgames.com',
-        });
-
-        if (!authCookie?.value) {
-          throw new Error('Epic Games authentication cookie not found');
-        }
-
-        logger.info('Fetching library data...');
-        const library = await epicClient
-          .getLibrary({
-            ...request.payload,
-            token: authCookie.value,
-            includeMetadata: true,
-          })
-          .catch((error) => {
-            logger.error('Error fetching Epic Games library:', error);
-            throw error;
-          });
-        logger.info('Library data received, sending response');
+        const library = await fetchLibraryData();
         sendResponse({ library });
       } catch (error) {
         logger.error('Error getting Epic Games library:', error);
