@@ -21,6 +21,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "consola": "^3.4.2",
+    "fuse.js": "^7.1.0",
+    "idb": "^8.0.3",
     "jose": "^6.0.11",
     "lucide-react": "^0.511.0",
     "postcss": "^8.5.3",
