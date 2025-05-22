@@ -216,6 +216,30 @@ export class LibrarySyncService {
         return;
       }
 
+      // Get current items from database
+      const currentItems = await this.getAllItems();
+      const currentItemIds = new Set(currentItems.map((item) => item.id));
+      const newItemIds = new Set(itemIds);
+
+      // Find items to remove (items in database but not in new library)
+      const itemsToRemove = Array.from(currentItemIds).filter(
+        (id) => !newItemIds.has(id),
+      );
+
+      // Remove items that are no longer owned
+      if (itemsToRemove.length > 0) {
+        logger.info(
+          `Removing ${itemsToRemove.length} items that are no longer owned`,
+        );
+        if (!this.db) {
+          throw new Error('Database not initialized');
+        }
+        const tx = this.db.transaction(this.STORE_NAME, 'readwrite');
+        const store = tx.objectStore(this.STORE_NAME);
+        await Promise.all(itemsToRemove.map((id) => store.delete(id)));
+        await tx.done;
+      }
+
       // Fetch detailed data from bulk API
       const bulkData = await this.fetchBulkData(itemIds);
 
