@@ -19,9 +19,8 @@ import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   RefreshCw,
-  ExternalLink,
-  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -30,6 +29,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import type { Offer } from "@/types/offer";
 
 export const Route = createFileRoute("/library")({
   component: RouteComponent,
@@ -81,13 +81,7 @@ function GameCard({ game }: { game: Item }) {
         </Card>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem
-          onClick={() =>
-            window.open(`https://egdata.app/items/${game.id}`, "_blank")
-          }
-        >
-          Open in egdata.app
-        </ContextMenuItem>
+        <DynamicItems id={game.id} />
         <ContextMenuItem onClick={() => handleCopy(game.id)}>
           Copy ID
         </ContextMenuItem>
@@ -96,6 +90,93 @@ function GameCard({ game }: { game: Item }) {
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+function DynamicItems({ id }: { id: string }) {
+  const {
+    data: offer,
+    isLoading: isOfferLoading,
+    isError: isOfferError,
+  } = useQuery({
+    queryKey: ["item", "base-offer", id],
+    queryFn: () =>
+      fetch(`https://api-gcp.egdata.app/items/${id}/offer`).then(
+        (res) => res.json() as Promise<Offer | { error: string }>
+      ),
+  });
+
+  if ((isOfferError || !offer || "error" in offer) && !isOfferLoading) {
+    return null;
+  }
+
+  if (isOfferLoading) {
+    return (
+      <>
+        <ContextMenuItem disabled>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Open in Epic Games Store
+        </ContextMenuItem>
+        <ContextMenuItem disabled>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Open egdata.app
+        </ContextMenuItem>
+      </>
+    );
+  }
+
+  if (!offer) {
+    return null;
+  }
+
+  const calculateSlug = (offer: Offer) => {
+    const urlType: "product" | "url" =
+      offer.offerType === "BASE_GAME" ? "product" : "url";
+    const isBundle = offer.offerType === "BUNDLE";
+    const namespace = isBundle ? "bundles" : "product";
+    const url =
+      offer.customAttributes?.["com.epicgames.app.productSlug"]?.value ??
+      offer.offerMappings?.[0]?.pageSlug ??
+      offer.urlSlug ??
+      (urlType === "product" ? offer.productSlug : offer.urlSlug);
+
+    if (!url) {
+      return null;
+    }
+
+    const storeUrl = `https://egdata.app/store/${namespace}/${url.replaceAll(
+      "-pp",
+      ""
+    )}?id=${offer.id}&ns=${offer.namespace}`;
+
+    return storeUrl;
+  };
+
+  const storeUrl = calculateSlug(offer as Offer);
+
+  return (
+    <>
+      <ContextMenuItem
+        onClick={() => {
+          if (storeUrl) {
+            window.open(storeUrl, "_blank");
+          }
+        }}
+        disabled={!storeUrl}
+      >
+        {storeUrl ? "Open Epic Games Store" : "No store URL found"}
+      </ContextMenuItem>
+      <ContextMenuItem
+        onClick={() =>
+          window.open(
+            `https://egdata.app/offers/${(offer as Offer).id}`,
+            "_blank"
+          )
+        }
+      >
+        Open egdata.app
+      </ContextMenuItem>
+    </>
   );
 }
 

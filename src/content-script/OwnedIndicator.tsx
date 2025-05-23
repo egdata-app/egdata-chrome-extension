@@ -9,7 +9,7 @@ export function OwnedIndicator() {
       className={cn(
         "absolute top-2.5 left-2.5 z-10 flex items-center transition-all duration-200",
         "h-7 rounded text-white shadow",
-        hovered ? "w-28 bg-blue-600" : "w-7 bg-blue-500"
+        hovered ? "w-20 bg-blue-600" : "w-7 bg-blue-500"
       )}
       style={{
         fontFamily: "sans-serif",
