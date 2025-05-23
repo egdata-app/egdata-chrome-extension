@@ -15,7 +15,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  ExternalLink,
+  Copy,
+} from "lucide-react";
+import { toast } from "sonner";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 export const Route = createFileRoute("/library")({
   component: RouteComponent,
@@ -37,27 +51,51 @@ function GameCard({ game }: { game: Item }) {
     game.keyImages.find((img) => img.type === "OfferImageWide") ||
     game.keyImages[0];
 
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success("Copied to clipboard");
+  };
+
   return (
-    <Card className="group overflow-hidden transition-transform hover:scale-105 p-0">
-      <CardContent className="p-0">
-        {/* Cover Image */}
-        {cover && (
-          <div className="relative aspect-video">
-            <img
-              src={cover.url}
-              alt={game.title}
-              className="w-full h-full object-cover"
-            />
-            {/* Overlay gradient for title */}
-            <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-black/80 to-transparent p-4">
-              <span className="text-lg font-bold text-white drop-shadow-md">
-                {game.title}
-              </span>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+    <ContextMenu>
+      <ContextMenuTrigger>
+        <Card className="group overflow-hidden transition-transform hover:scale-105 p-0">
+          <CardContent className="p-0">
+            {/* Cover Image */}
+            {cover && (
+              <div className="relative aspect-video">
+                <img
+                  src={cover.url}
+                  alt={game.title}
+                  className="w-full h-full object-cover"
+                />
+                {/* Overlay gradient for title */}
+                <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-black/80 to-transparent p-4">
+                  <span className="text-lg font-bold text-white drop-shadow-md">
+                    {game.title}
+                  </span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          onClick={() =>
+            window.open(`https://egdata.app/items/${game.id}`, "_blank")
+          }
+        >
+          Open in egdata.app
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => handleCopy(game.id)}>
+          Copy ID
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => handleCopy(game.namespace)}>
+          Copy namespace
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -68,12 +106,14 @@ function RouteComponent() {
     "lastModifiedDate"
   );
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [isSyncing, setIsSyncing] = useState(false);
   const pageSize = 16;
 
   const {
     data: searchResult,
     isLoading: isItemsLoading,
     error: itemsError,
+    refetch: refetchItems,
   } = useQuery({
     queryKey: ["library-items", page, searchQuery, sortBy, sortOrder],
     queryFn: () =>
@@ -86,6 +126,26 @@ function RouteComponent() {
       }),
     placeholderData: keepPreviousData,
   });
+
+  const handleSync = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "syncLibrary",
+      });
+      if (response.error) {
+        throw new Error(response.error);
+      }
+      toast.success("Library sync completed successfully");
+      // Refetch items to show updated data
+      await refetchItems();
+    } catch (error) {
+      consola.error("Failed to sync library", error);
+      toast.error("Failed to sync library");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   if (isItemsLoading) {
     return (
@@ -116,7 +176,20 @@ function RouteComponent() {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex flex-col gap-6 mb-8">
-        <h1 className="text-3xl font-bold">Your Epic Games Library</h1>
+        <div className="flex justify-between items-center">
+          <h1 className="text-3xl font-bold">Your Epic Games Library</h1>
+          <Button
+            onClick={handleSync}
+            disabled={isSyncing}
+            variant="outline"
+            className="gap-2"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`}
+            />
+            {isSyncing ? "Syncing..." : "Sync Library"}
+          </Button>
+        </div>
 
         {/* Search and Sort Controls */}
         <div className="flex flex-col sm:flex-row gap-4">

@@ -4,7 +4,11 @@ import {
   type NormalizedCacheObject,
 } from '@apollo/client';
 import consola from 'consola';
-
+import {
+  GetOffersValidationDocument,
+  type GetOffersValidationQuery,
+  type GetOffersValidationQueryVariables,
+} from '../queries/get-owned-offers';
 export class EpicGamesGraphQLClient {
   public client: ApolloClient<NormalizedCacheObject>;
   private logger = consola.withTag('epic-client');
@@ -118,5 +122,26 @@ export class EpicGamesGraphQLClient {
       this.logger.error('Error getting Epic Games library:', error);
       throw error;
     }
+  }
+
+  async getOffersValidation({
+    offers,
+  }: {
+    offers: {
+      namespace: string;
+      offerId: string;
+    }[];
+  }) {
+    const response = await this.client.query<
+      GetOffersValidationQuery,
+      GetOffersValidationQueryVariables
+    >({
+      query: GetOffersValidationDocument,
+      variables: {
+        offers,
+      },
+    });
+
+    return response.data;
   }
 }
