@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "rsbuild dev",
-    "build": "rsbuild build"
+    "build": "rimraf dist && rsbuild build && bestzip dist/egdata-chrome-extension.zip dist/*"
   },
   "keywords": [],
   "author": "",
@@ -47,12 +47,11 @@
     "@types/node": "^22.5.4",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "bestzip": "2.2.1",
+    "rimraf": "6.0.1",
     "typescript": "^5.5.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "@biomejs/biome",
-      "@tailwindcss/oxide"
-    ]
+    "onlyBuiltDependencies": ["@biomejs/biome", "@tailwindcss/oxide"]
   }
 }
