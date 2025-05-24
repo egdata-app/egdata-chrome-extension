@@ -33,37 +33,30 @@ async function initializeEpicClient() {
       logger.warn(
         'Epic Games authentication cookie not found - user is not logged in',
       );
-      // Only open the store if we haven't already tried
-      if (!document.hidden) {
-        logger.info('Opening Epic Games Store for login');
-        const tab = await chrome.tabs.create({
-          url: 'https://store.epicgames.com',
-          pinned: true,
-          active: false,
-        });
-        if (tab.id) {
-          const listener = async (
-            updatedTabId: number,
-            changeInfo: chrome.tabs.TabChangeInfo,
-          ) => {
-            if (updatedTabId === tab.id && changeInfo.status === 'complete') {
-              chrome.tabs.onUpdated.removeListener(listener);
-              chrome.tabs.remove(updatedTabId);
-              // Reset initialization flag after tab is closed
-              isInitializing = false;
-            }
-          };
-          chrome.tabs.onUpdated.addListener(listener);
-        }
+
+      logger.info('Opening Epic Games Store for login');
+      const tab = await chrome.tabs.create({
+        url: 'https://store.epicgames.com',
+        pinned: true,
+        active: false,
+      });
+      if (tab.id) {
+        const listener = async (
+          updatedTabId: number,
+          changeInfo: chrome.tabs.TabChangeInfo,
+        ) => {
+          if (updatedTabId === tab.id && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            chrome.tabs.remove(updatedTabId);
+            // Reset initialization flag after tab is closed
+            isInitializing = false;
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
       }
     }
   } catch (error) {
     logger.error('Failed to initialize Epic Games client:', error);
-  } finally {
-    // Reset initialization flag if we're not waiting for a tab
-    if (!document.hidden) {
-      isInitializing = false;
-    }
   }
 }
 
