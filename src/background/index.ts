@@ -7,8 +7,18 @@ const logger = consola.withTag('background');
 let epicClient: EpicGamesGraphQLClient | null = null;
 
 // Initialize Epic Games client with token from cookie
+let isInitializing = false;
+
 async function initializeEpicClient() {
+  // Prevent multiple simultaneous initialization attempts
+  if (isInitializing) {
+    logger.info('Already initializing Epic Games client, skipping');
+    return;
+  }
+
   logger.info('Initializing Epic Games client');
+  isInitializing = true;
+
   try {
     const authCookie = await chrome.cookies.get({
       name: 'EPIC_EG1',
@@ -21,27 +31,39 @@ async function initializeEpicClient() {
       });
     } else {
       logger.warn(
-        'Epic Games authentication cookie not found, trying to open Epic Games Store to refresh token',
+        'Epic Games authentication cookie not found - user is not logged in',
       );
-      const tab = await chrome.tabs.create({
-        url: 'https://store.epicgames.com',
-      });
-      if (tab.id) {
-        const listener = async (
-          updatedTabId: number,
-          changeInfo: chrome.tabs.TabChangeInfo,
-        ) => {
-          if (updatedTabId === tab.id && changeInfo.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(listener);
-            chrome.tabs.remove(updatedTabId);
-            await initializeEpicClient();
-          }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
+      // Only open the store if we haven't already tried
+      if (!document.hidden) {
+        logger.info('Opening Epic Games Store for login');
+        const tab = await chrome.tabs.create({
+          url: 'https://store.epicgames.com',
+          pinned: true,
+          active: false,
+        });
+        if (tab.id) {
+          const listener = async (
+            updatedTabId: number,
+            changeInfo: chrome.tabs.TabChangeInfo,
+          ) => {
+            if (updatedTabId === tab.id && changeInfo.status === 'complete') {
+              chrome.tabs.onUpdated.removeListener(listener);
+              chrome.tabs.remove(updatedTabId);
+              // Reset initialization flag after tab is closed
+              isInitializing = false;
+            }
+          };
+          chrome.tabs.onUpdated.addListener(listener);
+        }
       }
     }
   } catch (error) {
     logger.error('Failed to initialize Epic Games client:', error);
+  } finally {
+    // Reset initialization flag if we're not waiting for a tab
+    if (!document.hidden) {
+      isInitializing = false;
+    }
   }
 }
 
