@@ -9,6 +9,40 @@ import {
   type GetOffersValidationQuery,
   type GetOffersValidationQueryVariables,
 } from '../queries/get-owned-offers';
+
+interface OfferValidation {
+  namespace: string;
+  offerId: string;
+}
+
+interface OfferValidationResponse {
+  conflictingOffers: OfferValidation[];
+  missingPrerequisites: OfferValidation[];
+  fullyOwnedOffers: OfferValidation[];
+  possiblePartialUpgradeOffers: OfferValidation[];
+  unablePartiallyUpgradeOffers: OfferValidation[];
+}
+
+export async function getOffersValidation(
+  offers: {
+    namespace: string;
+    id: string;
+  }[],
+  token: string,
+): Promise<OfferValidationResponse> {
+  const response = await fetch(
+    'https://api.egdata.app/users-service/ownership',
+    {
+      method: 'POST',
+      body: JSON.stringify(offers),
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+  return response.json() as Promise<OfferValidationResponse>;
+}
+
 export class EpicGamesGraphQLClient {
   public client: ApolloClient<NormalizedCacheObject>;
   private logger = consola.withTag('epic-client');

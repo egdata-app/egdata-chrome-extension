@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { openDB, type IDBPDatabase } from "idb";
 import { OwnedIndicator } from "./OwnedIndicator";
 import "./styles.css";
+import { EpicGamesGraphQLClient } from "@/lib/clients/epic";
 
 const logger = consola.withTag("content-script");
 
@@ -136,6 +137,92 @@ async function processOwnedSlugs(
   }
 }
 
+async function checkOwnershipDirectly(slugs: string[]): Promise<{
+  ownedSlugs: string[];
+  offerMappings: Array<{
+    slug: string;
+    id: string | null;
+    namespace: string | null;
+  }>;
+}> {
+  const tokenResponse = await new Promise<
+    { token: string } | { error: string }
+  >((resolve) => {
+    chrome.runtime.sendMessage({ action: "getEpicToken" }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ error: chrome.runtime.lastError.message as string });
+      } else {
+        resolve(response as { token: string });
+      }
+    });
+  });
+
+  if ("error" in tokenResponse) {
+    throw new Error(tokenResponse.error);
+  }
+
+  const token = tokenResponse.token;
+  if (!token) {
+    throw new Error("No token received from background script");
+  }
+
+  const egdataResponse = await fetch(
+    "https://api-gcp.egdata.app/offers/slugs",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ slugs }),
+    }
+  );
+
+  if (!egdataResponse.ok) {
+    const errorText = await egdataResponse.text();
+    throw new Error(
+      `Failed to fetch offer IDs from egdata.app: ${egdataResponse.status} ${errorText}`
+    );
+  }
+
+  const offerMappingsFromEgdata: Array<{
+    slug: string;
+    id: string | null;
+    namespace: string | null;
+  }> = await egdataResponse.json();
+
+  const epicClient = new EpicGamesGraphQLClient({
+    token,
+  });
+
+  const epicOffersPayload = offerMappingsFromEgdata
+    .filter((o) => o.id && o.namespace)
+    .map((o) => ({
+      namespace: o.namespace,
+      offerId: o.id,
+    })) as { namespace: string; offerId: string }[];
+
+  const validationResult = await epicClient.getOffersValidation({
+    offers: epicOffersPayload,
+  });
+
+  const ownedEpicOffersSet = new Set(
+    validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
+      (ownedOffer: { offerId: string; namespace: string }) =>
+        `${ownedOffer.namespace}-${ownedOffer.offerId}`
+    )
+  );
+
+  const ownedSlugsResult = offerMappingsFromEgdata
+    .filter((o) => o.id && o.namespace)
+    .filter((o) => ownedEpicOffersSet.has(`${o.namespace}-${o.id}`))
+    .map((o) => o.slug);
+
+  return {
+    ownedSlugs: ownedSlugsResult,
+    offerMappings: offerMappingsFromEgdata,
+  };
+}
+
 async function findAndProcessOfferCards(): Promise<void> {
   logger.info("Searching for offer cards on:", window.location.href);
   const currentOfferCardsThisRun: OfferCard[] = [];
@@ -146,6 +233,7 @@ async function findAndProcessOfferCards(): Promise<void> {
   const cards = document.querySelectorAll(
     '[data-component="DiscoverOfferCard"], [data-component="BrowseOfferCard"], [data-component="VaultOfferCard"], a[href*="/p/"]'
   );
+
   for (const card of Array.from(cards)) {
     // If the card is an anchor tag itself, use it directly
     // Otherwise, find the anchor tag within the card
@@ -269,50 +357,31 @@ async function findAndProcessOfferCards(): Promise<void> {
 
     if (slugsToCheck.length > 0) {
       logger.debug("Checking ownership for slugs:", slugsToCheck);
-      // Send slugs to background script to check ownership
-      chrome.runtime.sendMessage(
-        {
-          action: "getOwnedSlugs",
-          payload: { slugs: slugsToCheck },
-        },
-        async (response) => {
-          if (chrome.runtime.lastError) {
-            logger.error(
-              "Error sending message to background script:",
-              chrome.runtime.lastError.message
-            );
-            return;
-          }
-          if (response.error) {
-            logger.error(
-              "Error getting owned slugs from background:",
-              response.error
-            );
-          } else {
-            logger.info(
-              "Owned slugs received from background:",
-              response.ownedSlugs
-            );
+      try {
+        const { ownedSlugs: responseOwnedSlugs, offerMappings } =
+          await checkOwnershipDirectly(slugsToCheck);
 
-            // Store offer mappings in cache
-            if (response.offerMappings) {
-              for (const mapping of response.offerMappings) {
-                await updateCachedOfferData(mapping.slug, {
-                  id: mapping.id,
-                  namespace: mapping.namespace,
-                  offerId: mapping.id, // The offerId is the same as the id in this case
-                });
-              }
-            }
+        logger.info("Owned slugs determined:", responseOwnedSlugs);
 
-            await processOwnedSlugs(
-              response.ownedSlugs,
-              currentOfferCardsThisRun,
-              slugsToCheck
-            );
+        // Store offer mappings in cache
+        if (offerMappings) {
+          for (const mapping of offerMappings) {
+            await updateCachedOfferData(mapping.slug, {
+              id: mapping.id,
+              namespace: mapping.namespace,
+              offerId: mapping.id, // The offerId is the same as the id in this case
+            });
           }
         }
-      );
+
+        await processOwnedSlugs(
+          responseOwnedSlugs,
+          currentOfferCardsThisRun,
+          slugsToCheck
+        );
+      } catch (error) {
+        logger.error("Error checking ownership:", error);
+      }
     }
   } else {
     logger.info("No new offer card slugs found in this run.");

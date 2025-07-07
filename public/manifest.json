@@ -31,5 +31,13 @@
     "https://*.epicgames.com/*",
     "https://*.egdata.app/*",
     "http://localhost/*"
-  ]
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://*.epicgames.com/*",
+      "https://*.egdata.app/*",
+      "http://localhost/*",
+      "https://egdata.app/*"
+    ]
+  }
 }

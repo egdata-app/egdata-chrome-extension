@@ -1,5 +1,8 @@
 import consola from 'consola';
-import { EpicGamesGraphQLClient } from '@/lib/clients/epic';
+import {
+  EpicGamesGraphQLClient,
+  getOffersValidation,
+} from '@/lib/clients/epic';
 import { librarySyncService } from '../lib/services/library-sync';
 
 const logger = consola.withTag('background');
@@ -148,8 +151,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 // Handle Epic Games Store purchase page
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (
+chrome.tabs.onUpdated.addListener(async () => {
+  /* if (
     changeInfo.status === 'complete' &&
     tab.url?.includes('store.epicgames.com/purchase')
   ) {
@@ -266,7 +269,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     } catch (error) {
       logger.error('Error processing purchase page:', error);
     }
-  }
+  } */
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -453,4 +456,295 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     })();
     return true; // Keep the message channel open for the async response
   }
+
+  /**
+   * Same logic as getOwnedSlugs, but we don't need to fetch offer IDs as they are already in the request.payload
+   */
+  if (request.action === 'getOwnedOffers') {
+    logger.info('Processing getOwnedOffers request', request.payload);
+
+    (async () => {
+      try {
+        const offers = request.payload?.offers;
+        if (!offers || !Array.isArray(offers) || offers.length === 0) {
+          logger.warn('No offers provided for getOwnedOffers');
+          sendResponse({ ownedOffers: [], error: 'No offers provided' });
+          return;
+        }
+
+        const authCookie = await chrome.cookies.get({
+          name: 'EPIC_EG1',
+          url: 'https://store.epicgames.com',
+        });
+
+        if (!authCookie) {
+          logger.error('No Epic Games authentication cookie found');
+          sendResponse({
+            ownedOffers: [],
+            error: 'No Epic Games authentication cookie found',
+          });
+          return;
+        }
+
+        logger.info('Epic Games authentication cookie found', authCookie);
+
+        const validationResult = await getOffersValidation(
+          offers,
+          authCookie.value,
+        );
+
+        logger.info(
+          'Epic ownership validation result:',
+          validationResult.fullyOwnedOffers,
+        );
+
+        const ownedEpicOffersSet = new Set(
+          validationResult.fullyOwnedOffers.map(
+            (ownedOffer: { offerId: string; namespace: string }) =>
+              `${ownedOffer.namespace}-${ownedOffer.offerId}`,
+          ),
+        );
+
+        const ownedOffersResult = offers.filter((o) =>
+          ownedEpicOffersSet.has(`${o.namespace}-${o.offerId}`),
+        );
+
+        logger.info('Owned offers determined:', ownedOffersResult);
+        sendResponse({ ownedOffers: ownedOffersResult });
+      } catch (error) {
+        logger.error('Error processing getOwnedOffers:', error);
+        sendResponse({
+          ownedOffers: [],
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Unknown error processing getOwnedOffers',
+        });
+      }
+    })();
+    return true; // Keep the message channel open for the async response
+  }
 });
+
+chrome.runtime.onMessageExternal.addListener(
+  (request, sender, sendResponse) => {
+    if (request.action === 'getOwnedOffers') {
+      logger.info(
+        'Processing EXTERNAL getOwnedOffers request',
+        request.payload,
+      );
+      (async () => {
+        try {
+          const offers: { namespace: string; id: string }[] =
+            request.payload?.offers;
+          if (!offers || !Array.isArray(offers) || offers.length === 0) {
+            logger.warn('No offers provided for getOwnedOffers');
+            sendResponse({ ownedOffers: [], error: 'No offers provided' });
+            return;
+          }
+
+          const authCookie = await chrome.cookies.get({
+            name: 'EPIC_EG1',
+            url: 'https://store.epicgames.com',
+          });
+          if (!authCookie) {
+            logger.error('No Epic Games authentication cookie found');
+            sendResponse({
+              ownedOffers: [],
+              error: 'No Epic Games authentication cookie found',
+            });
+            return;
+          }
+
+          const validationResult = await getOffersValidation(
+            offers,
+            authCookie.value,
+          );
+
+          // Combine fullyOwnedOffers and conflictingOffers as owned
+          const fullyOwned = validationResult.fullyOwnedOffers ?? [];
+
+          const ownedEpicOffersSet = new Set(
+            fullyOwned.map((o) => `${o.namespace}-${o.offerId}`),
+          );
+
+          const ownedOffersResult = offers.filter(
+            (o: { namespace: string; id: string }) =>
+              ownedEpicOffersSet.has(`${o.namespace}-${o.id}`),
+          );
+
+          logger.info('Owned offers determined (external):', ownedOffersResult);
+          logger.info('Fully owned offers:', fullyOwned);
+
+          logger.info('Owned offers determined (external):', ownedOffersResult);
+          sendResponse({ ownedOffers: ownedOffersResult });
+        } catch (error) {
+          logger.error('Error processing EXTERNAL getOwnedOffers:', error);
+          sendResponse({
+            ownedOffers: [],
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown error processing getOwnedOffers',
+          });
+        }
+      })();
+      return true;
+    }
+    // Optionally, support getOwnedSlugs for external as well
+    if (request.action === 'getOwnedSlugs') {
+      logger.info('Processing EXTERNAL getOwnedSlugs request', request.payload);
+      (async () => {
+        try {
+          const slugs: string[] = request.payload?.slugs;
+          if (!slugs || !Array.isArray(slugs) || slugs.length === 0) {
+            logger.warn('No slugs provided for getOwnedSlugs');
+            sendResponse({ ownedSlugs: [], error: 'No slugs provided' });
+            return;
+          }
+          const egdataResponse = await fetch(
+            'https://api-gcp.egdata.app/offers/slugs',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slugs }),
+            },
+          );
+          if (!egdataResponse.ok) {
+            const errorText = await egdataResponse.text();
+            logger.error(
+              'Failed to fetch offer IDs from egdata.app:',
+              egdataResponse.status,
+              errorText,
+            );
+            sendResponse({
+              ownedSlugs: [],
+              error: `Failed to fetch offer IDs from egdata.app: ${egdataResponse.status}`,
+            });
+            return;
+          }
+          const offerMappingsFromEgdata: Array<{
+            slug: string;
+            id: string | null;
+            namespace: string | null;
+          }> = await egdataResponse.json();
+          logger.info(
+            'Received offer ID mappings from egdata.app (external):',
+            offerMappingsFromEgdata,
+          );
+          if (!epicClient) {
+            await initializeEpicClient();
+            if (!epicClient) {
+              logger.error(
+                'Failed to initialize Epic Games client for ownership check',
+              );
+              sendResponse({
+                ownedSlugs: [],
+                error: 'Failed to initialize Epic Games client',
+              });
+              return;
+            }
+          }
+          const epicOffersPayload = offerMappingsFromEgdata
+            .filter(
+              (o: {
+                slug: string;
+                id: string | null;
+                namespace: string | null;
+              }) => o.id && o.namespace,
+            )
+            .map(
+              (o: {
+                slug: string;
+                id: string | null;
+                namespace: string | null;
+              }) => ({
+                namespace: o.namespace as string,
+                offerId: o.id as string,
+              }),
+            );
+          const validationResult = await epicClient.getOffersValidation({
+            offers: epicOffersPayload,
+          });
+          logger.info(
+            'Epic ownership validation result (external):',
+            validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers,
+          );
+          const ownedEpicOffersSet = new Set(
+            validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
+              (ownedOffer: { offerId: string; namespace: string }) =>
+                `${ownedOffer.namespace}-${ownedOffer.offerId}`,
+            ),
+          );
+          const ownedSlugsResult = offerMappingsFromEgdata
+            .filter(
+              (o: {
+                slug: string;
+                id: string | null;
+                namespace: string | null;
+              }) => o.id && o.namespace,
+            )
+            .filter(
+              (o: {
+                slug: string;
+                id: string | null;
+                namespace: string | null;
+              }) => ownedEpicOffersSet.has(`${o.namespace}-${o.id}`),
+            )
+            .map(
+              (o: {
+                slug: string;
+                id: string | null;
+                namespace: string | null;
+              }) => o.slug,
+            );
+          logger.info('Owned slugs determined (external):', ownedSlugsResult);
+          sendResponse({
+            ownedSlugs: ownedSlugsResult,
+            offerMappings: offerMappingsFromEgdata,
+          });
+        } catch (error) {
+          logger.error('Error processing EXTERNAL getOwnedSlugs:', error);
+          sendResponse({
+            ownedSlugs: [],
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown error processing getOwnedSlugs',
+          });
+        }
+      })();
+      return true;
+    }
+
+    if (request.action === 'getEpicToken') {
+      logger.info('Processing EXTERNAL getEpicToken request', request.payload);
+      (async () => {
+        try {
+          const authCookie = await chrome.cookies.get({
+            name: 'EPIC_EG1',
+            url: 'https://store.epicgames.com',
+          });
+          if (!authCookie) {
+            logger.error('No Epic Games authentication cookie found');
+            sendResponse({
+              error: 'No Epic Games authentication cookie found',
+            });
+            return;
+          }
+          logger.info('Epic Games authentication cookie found', authCookie);
+          sendResponse({ token: authCookie.value });
+        } catch (error) {
+          logger.error('Error processing EXTERNAL getEpicToken:', error);
+          sendResponse({
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown error processing getEpicToken',
+          });
+        }
+      })();
+      return true;
+    }
+  },
+);
