@@ -26,7 +26,8 @@ interface OfferValidationResponse {
 export async function getOffersValidation(
   offers: {
     namespace: string;
-    id: string;
+    id?: string;
+    offerId?: string;
   }[],
   token: string,
 ): Promise<OfferValidationResponse> {
@@ -34,7 +35,12 @@ export async function getOffersValidation(
     'https://api.egdata.app/users-service/ownership',
     {
       method: 'POST',
-      body: JSON.stringify(offers),
+      body: JSON.stringify(
+        offers.map((offer) => ({
+          namespace: offer.namespace,
+          id: offer.id ?? offer.offerId,
+        })),
+      ),
       headers: {
         Authorization: `Bearer ${token}`,
       },

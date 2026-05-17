@@ -1,7 +1,11 @@
 import type {
   ApiResponse,
   AuthStatus,
+  EgdataOffer,
+  ExtensionHealth,
   InternalMessage,
+  LibraryChangesResult,
+  LibraryFilterOptions,
   LibrarySearchParams,
   LibrarySearchResult,
   LibrarySyncStatus,
@@ -11,6 +15,9 @@ import type {
   OwnedSlugsResult,
   PriceHistoryRequest,
   Settings,
+  WatchlistCheckResult,
+  WatchlistItem,
+  WatchlistUpdatePayload,
 } from '@/lib/messages';
 import consola from 'consola';
 
@@ -73,6 +80,22 @@ export class MessagingClient {
     });
   }
 
+  getLibraryChanges(): Promise<LibraryChangesResult> {
+    return this.sendMessage<LibraryChangesResult>({
+      action: 'getLibraryChanges',
+    });
+  }
+
+  getLibraryFilterOptions(): Promise<LibraryFilterOptions> {
+    return this.sendMessage<LibraryFilterOptions>({
+      action: 'getLibraryFilterOptions',
+    });
+  }
+
+  getHealth(): Promise<ExtensionHealth> {
+    return this.sendMessage<ExtensionHealth>({ action: 'getHealth' });
+  }
+
   checkOwnedSlugs(slugs: string[]): Promise<OwnedSlugsResult> {
     return this.sendMessage<OwnedSlugsResult>({
       action: 'ownership.checkSlugs',
@@ -107,6 +130,33 @@ export class MessagingClient {
       action: 'settings.update',
       payload: patch,
     });
+  }
+
+  getFreeGames(): Promise<EgdataOffer[]> {
+    return this.sendMessage<EgdataOffer[]>({ action: 'getFreeGames' });
+  }
+
+  getWatchlist(): Promise<WatchlistItem[]> {
+    return this.sendMessage<WatchlistItem[]>({ action: 'getWatchlist' });
+  }
+
+  updateWatchlist(
+    payload: WatchlistUpdatePayload,
+  ): Promise<WatchlistItem | null> {
+    return this.sendMessage<WatchlistItem | null>({
+      action: 'updateWatchlist',
+      payload,
+    });
+  }
+
+  checkWatchlist(): Promise<WatchlistCheckResult> {
+    return this.sendMessage<WatchlistCheckResult>({
+      action: 'checkWatchlist',
+    });
+  }
+
+  clearOfferCache(): Promise<{ success: true }> {
+    return this.sendMessage<{ success: true }>({ action: 'clearOfferCache' });
   }
 }
 

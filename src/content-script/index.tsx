@@ -177,7 +177,7 @@ async function scanOfferCards() {
   const settings = await messagingClient.getSettings();
   const cards = findOfferCards();
 
-  if (!settings.showOwnedBadges) {
+  if (!settings.overlayEnabled) {
     for (const card of cards) {
       removeOwnedIndicator(card.element);
     }

@@ -1,4 +1,17 @@
-import type { Item } from '@/types/item';
+import type {
+  LibraryFilterOptions,
+  LibraryItemRecord,
+  LibrarySearchParams,
+  LibrarySearchResult,
+  LibrarySyncStatus,
+} from '@/lib/services/library-sync';
+import type {
+  AppSettings,
+  EgdataOffer,
+  ExtensionHealth,
+  SyncMetadata,
+  WatchlistItem,
+} from '@/types/egdata';
 
 export type ApiResponse<T> =
   | {
@@ -15,35 +28,7 @@ export interface AuthStatus {
   expiresAt?: number;
 }
 
-export interface Settings {
-  showOwnedBadges: boolean;
-}
-
-export interface LibrarySyncStatus {
-  state: 'idle' | 'syncing' | 'success' | 'error';
-  itemCount: number;
-  startedAt?: number;
-  lastSyncedAt?: number;
-  lastError?: string;
-}
-
-export interface LibrarySearchParams {
-  page?: number;
-  pageSize?: number;
-  searchQuery?: string;
-  sortBy?: 'lastModifiedDate' | 'title';
-  sortOrder?: 'asc' | 'desc';
-}
-
-export interface LibrarySearchResult {
-  items: Item[];
-  pagination: {
-    currentPage: number;
-    totalPages: number;
-    totalItems: number;
-    pageSize: number;
-  };
-}
+export type Settings = AppSettings;
 
 export interface OfferLookupInput {
   namespace: string;
@@ -112,12 +97,44 @@ export interface OfferPriceHistoryResult {
   points: PriceHistoryPoint[];
 }
 
+export type WatchlistUpdatePayload =
+  | { type: 'remove'; namespace: string; offerId: string }
+  | {
+      type: 'upsert';
+      item: Omit<WatchlistItem, 'key' | 'createdAt' | 'updatedAt'>;
+    };
+
+export interface WatchlistCheckResult {
+  checked: WatchlistItem[];
+  triggered: WatchlistItem[];
+  summary: string;
+}
+
+export interface LibraryChangesResult {
+  metadata: SyncMetadata;
+  addedItems: LibraryItemRecord[];
+  removedItemIds: string[];
+  updatedItemIds: string[];
+}
+
 export type InternalMessage =
   | { action: 'auth.getStatus' }
   | { action: 'auth.openLogin' }
   | { action: 'library.getStatus' }
   | { action: 'library.sync' }
   | { action: 'library.search'; payload?: LibrarySearchParams }
+  | { action: 'syncLibrary' }
+  | { action: 'searchLibrary'; payload?: LibrarySearchParams }
+  | { action: 'getLibraryChanges' }
+  | { action: 'getLibraryFilterOptions' }
+  | { action: 'getHealth' }
+  | { action: 'getSettings' }
+  | { action: 'updateSettings'; payload: Partial<Settings> }
+  | { action: 'getFreeGames' }
+  | { action: 'getWatchlist' }
+  | { action: 'updateWatchlist'; payload: WatchlistUpdatePayload }
+  | { action: 'checkWatchlist' }
+  | { action: 'clearOfferCache' }
   | { action: 'ownership.checkSlugs'; payload: { slugs: string[] } }
   | { action: 'ownership.checkOffers'; payload: { offers: OfferLookupInput[] } }
   | { action: 'pricing.getOfferHistory'; payload: PriceHistoryRequest }
@@ -136,6 +153,18 @@ const INTERNAL_ACTIONS = new Set<InternalMessage['action']>([
   'library.getStatus',
   'library.sync',
   'library.search',
+  'syncLibrary',
+  'searchLibrary',
+  'getLibraryChanges',
+  'getLibraryFilterOptions',
+  'getHealth',
+  'getSettings',
+  'updateSettings',
+  'getFreeGames',
+  'getWatchlist',
+  'updateWatchlist',
+  'checkWatchlist',
+  'clearOfferCache',
   'ownership.checkSlugs',
   'ownership.checkOffers',
   'pricing.getOfferHistory',
@@ -172,3 +201,14 @@ export function responseError(error: unknown): ApiResponse<never> {
     error: error instanceof Error ? error.message : String(error),
   };
 }
+
+export type {
+  EgdataOffer,
+  ExtensionHealth,
+  LibraryFilterOptions,
+  LibraryItemRecord,
+  LibrarySearchParams,
+  LibrarySearchResult,
+  LibrarySyncStatus,
+  WatchlistItem,
+};

@@ -1,4 +1,4 @@
-import { Home, Library } from 'lucide-react';
+import { Home, Library, Settings, Star } from 'lucide-react';
 
 import {
   Sidebar,
@@ -15,7 +15,7 @@ import { Link } from '@tanstack/react-router';
 // Menu items.
 const items = [
   {
-    title: 'Home',
+    title: 'Today',
     url: '/',
     icon: Home,
   },
@@ -23,6 +23,16 @@ const items = [
     title: 'Library',
     url: '/library',
     icon: Library,
+  },
+  {
+    title: 'Watchlist',
+    url: '/watchlist',
+    icon: Star,
+  },
+  {
+    title: 'Settings',
+    url: '/settings',
+    icon: Settings,
   },
 ];
 

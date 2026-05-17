@@ -11,10 +11,24 @@
 // Import Routes
 
 import { Route as rootRoute } from './routes/__root'
+import { Route as WatchlistImport } from './routes/watchlist'
+import { Route as SettingsImport } from './routes/settings'
 import { Route as LibraryImport } from './routes/library'
 import { Route as IndexImport } from './routes/index'
 
 // Create/Update Routes
+
+const WatchlistRoute = WatchlistImport.update({
+  id: '/watchlist',
+  path: '/watchlist',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const SettingsRoute = SettingsImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRoute,
+} as any)
 
 const LibraryRoute = LibraryImport.update({
   id: '/library',
@@ -46,6 +60,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryImport
       parentRoute: typeof rootRoute
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsImport
+      parentRoute: typeof rootRoute
+    }
+    '/watchlist': {
+      id: '/watchlist'
+      path: '/watchlist'
+      fullPath: '/watchlist'
+      preLoaderRoute: typeof WatchlistImport
+      parentRoute: typeof rootRoute
+    }
   }
 }
 
@@ -54,36 +82,46 @@ declare module '@tanstack/react-router' {
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/library': typeof LibraryRoute
+  '/settings': typeof SettingsRoute
+  '/watchlist': typeof WatchlistRoute
 }
 
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/library': typeof LibraryRoute
+  '/settings': typeof SettingsRoute
+  '/watchlist': typeof WatchlistRoute
 }
 
 export interface FileRoutesById {
   __root__: typeof rootRoute
   '/': typeof IndexRoute
   '/library': typeof LibraryRoute
+  '/settings': typeof SettingsRoute
+  '/watchlist': typeof WatchlistRoute
 }
 
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/library'
+  fullPaths: '/' | '/library' | '/settings' | '/watchlist'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/library'
-  id: '__root__' | '/' | '/library'
+  to: '/' | '/library' | '/settings' | '/watchlist'
+  id: '__root__' | '/' | '/library' | '/settings' | '/watchlist'
   fileRoutesById: FileRoutesById
 }
 
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LibraryRoute: typeof LibraryRoute
+  SettingsRoute: typeof SettingsRoute
+  WatchlistRoute: typeof WatchlistRoute
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LibraryRoute: LibraryRoute,
+  SettingsRoute: SettingsRoute,
+  WatchlistRoute: WatchlistRoute,
 }
 
 export const routeTree = rootRoute
@@ -97,7 +135,9 @@ export const routeTree = rootRoute
       "filePath": "__root.tsx",
       "children": [
         "/",
-        "/library"
+        "/library",
+        "/settings",
+        "/watchlist"
       ]
     },
     "/": {
@@ -105,6 +145,12 @@ export const routeTree = rootRoute
     },
     "/library": {
       "filePath": "library.tsx"
+    },
+    "/settings": {
+      "filePath": "settings.tsx"
+    },
+    "/watchlist": {
+      "filePath": "watchlist.tsx"
     }
   }
 }
