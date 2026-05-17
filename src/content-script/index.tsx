@@ -1,531 +1,331 @@
-import consola from "consola";
-import { createRoot } from "react-dom/client";
-import { openDB, type IDBPDatabase } from "idb";
-import { OwnedIndicator } from "./OwnedIndicator";
-import "./styles.css";
-import { EpicGamesGraphQLClient } from "@/lib/clients/epic";
+import { messagingClient } from '@/lib/clients/messaging';
+import consola from 'consola';
+import { type Root, createRoot } from 'react-dom/client';
+import { OwnedIndicator } from './OwnedIndicator';
+import { PriceHistoryHovercard } from './PriceHistoryHovercard';
+import {
+  buildPriceHistoryRequest,
+  findPrimaryPriceElement,
+  isEpicProductPageUrl,
+} from './product-page';
+import './styles.css';
 
-const logger = consola.withTag("content-script");
+const logger = consola.withTag('content-script');
+const OFFER_CARD_SELECTOR =
+  '[data-component="DiscoverOfferCard"], [data-component="BrowseOfferCard"], [data-component="VaultOfferCard"], a[href*="/p/"]';
+const INDICATOR_CLASS = 'egdata-owned-indicator';
+const PRICE_HISTORY_CLASS = 'egdata-price-history-root';
+const SCAN_DEBOUNCE_MS = 250;
 
-interface OfferCard {
+export interface OfferCard {
   element: Element;
   slug: string;
-  uniqueId?: string;
 }
 
-interface OfferData {
-  id: string | null;
-  namespace: string | null;
-  offerId: string | null;
-  isOwned: boolean;
-  lastChecked: number;
+let scanTimer: number | undefined;
+let productPageScanTimer: number | undefined;
+let observer: MutationObserver | null = null;
+let lastUrl = window.location.href;
+let initialized = false;
+const priceHistoryRoots = new Map<HTMLElement, Root>();
+
+export function extractStoreSlug(href: string): string | null {
+  try {
+    const url = new URL(href, window.location.origin);
+    const slug = url.pathname.split('/p/')[1]?.split('/')[0]?.trim();
+    return slug || null;
+  } catch {
+    return null;
+  }
 }
 
-const offerCards: OfferCard[] = [];
+function getCardElement(candidate: Element): Element | null {
+  if (candidate instanceof HTMLAnchorElement) {
+    return (
+      candidate.closest(
+        '[data-component="DiscoverOfferCard"], [data-component="BrowseOfferCard"], [data-component="VaultOfferCard"]',
+      ) ??
+      candidate.closest('div[class*="css-"]') ??
+      candidate
+    );
+  }
 
-// IndexedDB configuration
-const DB_NAME = "egdata-offer-db";
-const DB_VERSION = 1;
-const STORE_NAME = "offers";
-
-// Initialize IndexedDB
-async function initDB(): Promise<IDBPDatabase> {
-  return openDB(DB_NAME, DB_VERSION, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: "slug" });
-        logger.info("Created object store:", STORE_NAME);
-      }
-    },
-  });
+  return candidate;
 }
 
-async function saveOfferDataToDB(data: Record<string, OfferData>) {
-  const db = await initDB();
-  const tx = db.transaction(STORE_NAME, "readwrite");
-  const store = tx.objectStore(STORE_NAME);
+export function findOfferCards(root: ParentNode = document): OfferCard[] {
+  const cards: OfferCard[] = [];
 
-  await Promise.all(
-    Object.entries(data).map(([slug, offerData]) =>
-      store.put({ ...offerData, slug })
-    )
-  );
+  for (const candidate of Array.from(
+    root.querySelectorAll(OFFER_CARD_SELECTOR),
+  )) {
+    const link =
+      candidate instanceof HTMLAnchorElement
+        ? candidate
+        : candidate.querySelector('a[href*="/p/"]');
 
-  await tx.done;
+    if (!link || !link.querySelector('img')) {
+      continue;
+    }
+
+    const href = link.getAttribute('href');
+    if (!href) {
+      continue;
+    }
+
+    const slug = extractStoreSlug(href);
+    const cardElement = getCardElement(candidate);
+    if (!slug || !cardElement) {
+      continue;
+    }
+
+    if (
+      cards.some((card) => card.element === cardElement && card.slug === slug)
+    ) {
+      continue;
+    }
+
+    cards.push({ element: cardElement, slug });
+  }
+
+  return cards;
 }
 
-async function getCachedOfferData(
-  slug: string
-): Promise<OfferData | undefined> {
-  const db = await initDB();
-  return db.get(STORE_NAME, slug);
+function removeOwnedIndicator(card: Element) {
+  card.querySelector(`.${INDICATOR_CLASS}`)?.remove();
+  (card as HTMLElement).removeAttribute('data-egdata-owned-slug');
 }
 
-async function updateCachedOfferData(slug: string, data: Partial<OfferData>) {
-  const existingData = await getCachedOfferData(slug);
-  const updatedData: OfferData = {
-    id: existingData?.id ?? null,
-    namespace: existingData?.namespace ?? null,
-    offerId: existingData?.offerId ?? null,
-    isOwned: existingData?.isOwned ?? false,
-    lastChecked: Date.now(),
-    ...data,
-  };
-  await saveOfferDataToDB({ [slug]: updatedData });
+function removePriceHistoryHovercards() {
+  for (const container of Array.from(
+    document.querySelectorAll<HTMLElement>(`.${PRICE_HISTORY_CLASS}`),
+  )) {
+    priceHistoryRoots.get(container)?.unmount();
+    priceHistoryRoots.delete(container);
+    container.remove();
+  }
+
+  for (const target of Array.from(
+    document.querySelectorAll('[data-egdata-price-history-slug]'),
+  )) {
+    target.removeAttribute('data-egdata-price-history-slug');
+  }
 }
 
-// Function to add owned indicator to a card
 function addOwnedIndicator(card: Element, slug: string) {
-  if (card.querySelector(".egdata-owned-indicator")) return;
+  const existingIndicator = card.querySelector(`.${INDICATOR_CLASS}`);
+  const currentSlug = (card as HTMLElement).dataset.egdataOwnedSlug;
 
-  // Add a data attribute to track which card this is
-  const uniqueId = `${slug}-${Date.now()}`;
-  (card as HTMLElement).dataset.egdataCardId = uniqueId;
+  if (existingIndicator && currentSlug === slug) {
+    return;
+  }
 
-  const indicator = document.createElement("div");
-  indicator.className = "egdata-owned-indicator";
-  indicator.dataset.egdataCardId = uniqueId;
-  (card as HTMLElement).style.position = "relative";
-  indicator.style.position = "absolute";
-  indicator.style.top = "0";
-  indicator.style.left = "0";
-  indicator.style.zIndex = "10";
+  existingIndicator?.remove();
+  (card as HTMLElement).dataset.egdataOwnedSlug = slug;
+
+  const position = window.getComputedStyle(card).position;
+  if (position === 'static') {
+    (card as HTMLElement).style.position = 'relative';
+  }
+
+  const indicator = document.createElement('div');
+  indicator.className = INDICATOR_CLASS;
+  indicator.style.position = 'absolute';
+  indicator.style.left = '8px';
+  indicator.style.top = '8px';
+  indicator.style.zIndex = '10';
+  indicator.style.pointerEvents = 'none';
   card.appendChild(indicator);
 
   createRoot(indicator).render(<OwnedIndicator />);
 }
 
-// Function to process owned slugs and update UI
-async function processOwnedSlugs(
-  ownedSlugs: string[],
-  currentCards: OfferCard[] = [],
-  checkedSlugs: string[] = []
+function addPriceHistoryHovercard(
+  target: HTMLElement,
+  request: NonNullable<ReturnType<typeof buildPriceHistoryRequest>>,
 ) {
-  logger.info(
-    "Processing owned slugs:",
-    ownedSlugs,
-    "for checked slugs:",
-    checkedSlugs
-  );
+  const currentSlug = target.dataset.egdataPriceHistorySlug;
+  const existingContainer =
+    target.nextElementSibling instanceof HTMLElement &&
+    target.nextElementSibling.classList.contains(PRICE_HISTORY_CLASS)
+      ? target.nextElementSibling
+      : null;
 
-  // Create a Set for faster lookups
-  const ownedSlugsSet = new Set(ownedSlugs);
-  const checkedSlugsSet = new Set(checkedSlugs);
+  if (existingContainer && currentSlug === request.slug) {
+    return;
+  }
 
-  // Only process current cards, don't use the global offerCards array
-  const cardsToProcess = currentCards;
+  if (existingContainer) {
+    priceHistoryRoots.get(existingContainer)?.unmount();
+    priceHistoryRoots.delete(existingContainer);
+    existingContainer.remove();
+  }
 
-  // Update cache with owned status for all checked slugs
-  for (const card of cardsToProcess) {
-    // Only update cache if this slug was actually checked
-    if (checkedSlugsSet.has(card.slug)) {
-      const isOwned = ownedSlugsSet.has(card.slug);
-      logger.debug(
-        "Updating cache for checked slug:",
-        card.slug,
-        "isOwned:",
-        isOwned
-      );
-      await updateCachedOfferData(card.slug, { isOwned });
+  target.dataset.egdataPriceHistorySlug = request.slug;
+
+  const container = document.createElement('span');
+  container.className = PRICE_HISTORY_CLASS;
+  container.dataset.egdataPriceHistorySlug = request.slug;
+  target.insertAdjacentElement('afterend', container);
+
+  const root = createRoot(container);
+  priceHistoryRoots.set(container, root);
+  root.render(<PriceHistoryHovercard request={request} />);
+}
+
+async function scanOfferCards() {
+  const settings = await messagingClient.getSettings();
+  const cards = findOfferCards();
+
+  if (!settings.showOwnedBadges) {
+    for (const card of cards) {
+      removeOwnedIndicator(card.element);
     }
+    return;
+  }
 
-    // Always add indicator if owned, regardless of whether we checked it
-    if (ownedSlugsSet.has(card.slug)) {
-      logger.info("Adding owned indicator to card:", card.slug, card.element);
+  const slugs = Array.from(new Set(cards.map((card) => card.slug)));
+  if (slugs.length === 0) {
+    return;
+  }
+
+  const { ownedSlugs } = await messagingClient.checkOwnedSlugs(slugs);
+  const ownedSlugSet = new Set(ownedSlugs);
+
+  for (const card of cards) {
+    if (ownedSlugSet.has(card.slug)) {
       addOwnedIndicator(card.element, card.slug);
-    }
-  }
-}
-
-async function checkOwnershipDirectly(slugs: string[]): Promise<{
-  ownedSlugs: string[];
-  offerMappings: Array<{
-    slug: string;
-    id: string | null;
-    namespace: string | null;
-  }>;
-}> {
-  const tokenResponse = await new Promise<
-    { token: string } | { error: string }
-  >((resolve) => {
-    chrome.runtime.sendMessage({ action: "getEpicToken" }, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ error: chrome.runtime.lastError.message as string });
-      } else {
-        resolve(response as { token: string });
-      }
-    });
-  });
-
-  if ("error" in tokenResponse) {
-    throw new Error(tokenResponse.error);
-  }
-
-  const token = tokenResponse.token;
-  if (!token) {
-    throw new Error("No token received from background script");
-  }
-
-  const egdataResponse = await fetch(
-    "https://api-gcp.egdata.app/offers/slugs",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ slugs }),
-    }
-  );
-
-  if (!egdataResponse.ok) {
-    const errorText = await egdataResponse.text();
-    throw new Error(
-      `Failed to fetch offer IDs from egdata.app: ${egdataResponse.status} ${errorText}`
-    );
-  }
-
-  const offerMappingsFromEgdata: Array<{
-    slug: string;
-    id: string | null;
-    namespace: string | null;
-  }> = await egdataResponse.json();
-
-  const epicClient = new EpicGamesGraphQLClient({
-    token,
-  });
-
-  const epicOffersPayload = offerMappingsFromEgdata
-    .filter((o) => o.id && o.namespace)
-    .map((o) => ({
-      namespace: o.namespace,
-      offerId: o.id,
-    })) as { namespace: string; offerId: string }[];
-
-  const validationResult = await epicClient.getOffersValidation({
-    offers: epicOffersPayload,
-  });
-
-  const ownedEpicOffersSet = new Set(
-    validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
-      (ownedOffer: { offerId: string; namespace: string }) =>
-        `${ownedOffer.namespace}-${ownedOffer.offerId}`
-    )
-  );
-
-  const ownedSlugsResult = offerMappingsFromEgdata
-    .filter((o) => o.id && o.namespace)
-    .filter((o) => ownedEpicOffersSet.has(`${o.namespace}-${o.id}`))
-    .map((o) => o.slug);
-
-  return {
-    ownedSlugs: ownedSlugsResult,
-    offerMappings: offerMappingsFromEgdata,
-  };
-}
-
-async function findAndProcessOfferCards(): Promise<void> {
-  logger.info("Searching for offer cards on:", window.location.href);
-  const currentOfferCardsThisRun: OfferCard[] = [];
-  const slugsToCheck: string[] = [];
-  const ownedSlugs: string[] = [];
-
-  // Search for all types of offer cards
-  const cards = document.querySelectorAll(
-    '[data-component="DiscoverOfferCard"], [data-component="BrowseOfferCard"], [data-component="VaultOfferCard"], a[href*="/p/"]'
-  );
-
-  for (const card of Array.from(cards)) {
-    // If the card is an anchor tag itself, use it directly
-    // Otherwise, find the anchor tag within the card
-    const link =
-      card instanceof HTMLAnchorElement
-        ? card
-        : card.querySelector('a[href*="/p/"]');
-    if (link) {
-      // Check if the link contains an image
-      const hasImage = link.querySelector("img") !== null;
-      if (!hasImage) continue;
-
-      const href = link.getAttribute("href");
-      if (href?.includes("/p/")) {
-        const slug = href.split("/p/")[1].split("?")[0];
-        // For anchor tags, we need to find the closest card-like container
-        const cardElement =
-          card instanceof HTMLAnchorElement
-            ? card.closest('div[class*="css-"]')
-            : card;
-        if (cardElement) {
-          // Check if this card already has an indicator
-          const existingIndicator = cardElement.querySelector(
-            ".egdata-owned-indicator"
-          );
-          if (existingIndicator) {
-            // Get the card's current ID
-            const cardId = cardElement.getAttribute("data-egdata-card-id");
-            // If the card has an ID that doesn't match the current slug, remove the indicator
-            if (!cardId || !cardId.startsWith(slug)) {
-              logger.info("Removing invalid indicator for card:", cardElement);
-              existingIndicator.remove();
-            } else {
-              // Indicator is valid, skip this card
-              continue;
-            }
-          }
-
-          const offerCard = { element: cardElement, slug };
-
-          // Add to global list, avoiding duplicates
-          if (
-            !offerCards.some(
-              (oc) => oc.element === cardElement && oc.slug === slug
-            )
-          ) {
-            offerCards.push(offerCard);
-          }
-
-          // Add to this run's list, avoiding duplicates
-          if (
-            !currentOfferCardsThisRun.some(
-              (oc) => oc.slug === slug && oc.element === cardElement
-            )
-          ) {
-            currentOfferCardsThisRun.push(offerCard);
-          }
-
-          // Always check cache for owned status
-          const cachedData = await getCachedOfferData(slug);
-          logger.debug("Cache data for", slug, ":", cachedData);
-
-          if (cachedData?.isOwned) {
-            logger.debug(
-              "Found cached owned status for:",
-              slug,
-              "with data:",
-              cachedData
-            );
-            ownedSlugs.push(slug);
-          } else {
-            // Only check with background script if we don't have cached data or it's expired
-            const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
-            const isExpired =
-              cachedData &&
-              Date.now() - cachedData.lastChecked > CACHE_DURATION;
-            logger.debug("Cache status for", slug, ":", {
-              hasCache: !!cachedData,
-              isExpired,
-              lastChecked: cachedData?.lastChecked,
-              currentTime: Date.now(),
-              timeDiff: cachedData ? Date.now() - cachedData.lastChecked : null,
-            });
-
-            if (!cachedData || isExpired) {
-              logger.debug(
-                "Adding to check list:",
-                slug,
-                "because:",
-                !cachedData ? "no cache" : "cache expired"
-              );
-              slugsToCheck.push(slug);
-            } else {
-              logger.debug(
-                "Skipping check for",
-                slug,
-                "because cache is valid and not owned"
-              );
-            }
-          }
-        }
-      }
-    }
-  }
-
-  logger.debug(
-    `Total unique offer cards stored globally: ${offerCards.length}`
-  );
-
-  if (currentOfferCardsThisRun.length > 0) {
-    const slugsThisRun = currentOfferCardsThisRun.map((oc) => oc.slug);
-    logger.debug("Slugs found in this run:", slugsThisRun);
-
-    // Process any owned slugs we found in cache immediately
-    if (ownedSlugs.length > 0) {
-      logger.debug("Processing cached owned slugs:", ownedSlugs);
-      await processOwnedSlugs(ownedSlugs, currentOfferCardsThisRun, ownedSlugs);
     } else {
-      logger.debug("No cached owned slugs found.");
+      removeOwnedIndicator(card.element);
     }
-
-    if (slugsToCheck.length > 0) {
-      logger.debug("Checking ownership for slugs:", slugsToCheck);
-      try {
-        const { ownedSlugs: responseOwnedSlugs, offerMappings } =
-          await checkOwnershipDirectly(slugsToCheck);
-
-        logger.info("Owned slugs determined:", responseOwnedSlugs);
-
-        // Store offer mappings in cache
-        if (offerMappings) {
-          for (const mapping of offerMappings) {
-            await updateCachedOfferData(mapping.slug, {
-              id: mapping.id,
-              namespace: mapping.namespace,
-              offerId: mapping.id, // The offerId is the same as the id in this case
-            });
-          }
-        }
-
-        await processOwnedSlugs(
-          responseOwnedSlugs,
-          currentOfferCardsThisRun,
-          slugsToCheck
-        );
-      } catch (error) {
-        logger.error("Error checking ownership:", error);
-      }
-    }
-  } else {
-    logger.info("No new offer card slugs found in this run.");
   }
 }
 
-// Function to clear the offerCards array
-function clearOfferCards() {
-  // Remove all indicators from the DOM
-  const indicators = document.querySelectorAll(".egdata-owned-indicator");
-  for (const indicator of Array.from(indicators)) {
+function scanProductPagePriceHistory() {
+  if (!isEpicProductPageUrl(window.location.href)) {
+    removePriceHistoryHovercards();
+    return;
+  }
+
+  const request = buildPriceHistoryRequest();
+  if (!request?.pagePrice) {
+    return;
+  }
+
+  const target = findPrimaryPriceElement(
+    document,
+    request.pagePrice,
+    request.locale,
+  );
+  if (!target) {
+    return;
+  }
+
+  addPriceHistoryHovercard(target, request);
+}
+
+function scheduleScan(delay = SCAN_DEBOUNCE_MS) {
+  if (scanTimer) {
+    window.clearTimeout(scanTimer);
+  }
+
+  scanTimer = window.setTimeout(() => {
+    scanOfferCards().catch((error) => {
+      logger.error('Error scanning offer cards:', error);
+    });
+  }, delay);
+}
+
+function scheduleProductPageScan(delay = SCAN_DEBOUNCE_MS) {
+  if (productPageScanTimer) {
+    window.clearTimeout(productPageScanTimer);
+  }
+
+  productPageScanTimer = window.setTimeout(() => {
+    try {
+      scanProductPagePriceHistory();
+    } catch (error) {
+      logger.error('Error scanning product page price:', error);
+    }
+  }, delay);
+}
+
+function handleUrlChange() {
+  const currentUrl = window.location.href;
+  if (currentUrl === lastUrl) {
+    return;
+  }
+
+  lastUrl = currentUrl;
+  for (const indicator of Array.from(
+    document.querySelectorAll(`.${INDICATOR_CLASS}`),
+  )) {
     indicator.remove();
   }
-
-  // Clear the array
-  offerCards.length = 0;
-  logger.info("Cleared offerCards array and removed indicators from DOM");
+  removePriceHistoryHovercards();
+  scheduleScan(500);
+  scheduleProductPageScan(500);
 }
 
-// Track URL changes for client-side navigation
-let lastUrl = window.location.href;
-function checkUrlChange() {
-  const currentUrl = window.location.href;
-  if (currentUrl !== lastUrl) {
-    logger.info("URL changed from", lastUrl, "to", currentUrl);
-    lastUrl = currentUrl;
-    // Add 1 second delay before clearing and processing cards
-    setTimeout(() => {
-      clearOfferCards();
-      findAndProcessOfferCards().catch((error) => {
-        logger.error("Error processing offer cards:", error);
-      });
-    }, 1000);
-  }
-}
-
-// Set up URL change detection
-function setupUrlChangeDetection() {
-  // Check for URL changes periodically
-  setInterval(checkUrlChange, 1000);
-
-  // Also check when history changes (for pushState/replaceState)
+function installUrlHooks() {
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
 
-  history.pushState = function (
+  history.pushState = function pushState(
     state: unknown,
     unused: string,
-    url?: string | URL | null
+    url?: string | URL | null,
   ) {
     originalPushState.call(this, state, unused, url);
-    checkUrlChange();
+    handleUrlChange();
   };
 
-  history.replaceState = function (
+  history.replaceState = function replaceState(
     state: unknown,
     unused: string,
-    url?: string | URL | null
+    url?: string | URL | null,
   ) {
     originalReplaceState.call(this, state, unused, url);
-    checkUrlChange();
+    handleUrlChange();
   };
+
+  window.addEventListener('popstate', handleUrlChange);
+  window.setInterval(handleUrlChange, 1000);
 }
 
-// Also run when the page is fully loaded
-window.addEventListener("load", () => {
-  logger.info("Window load event fired");
-  clearOfferCards();
-  findAndProcessOfferCards().catch((error) => {
-    logger.error("Error processing offer cards:", error);
-  });
-  logger.info("Setting up mutation observer...");
-  setupMutationObserver();
-  setupUrlChangeDetection();
-});
-
-// Set up mutation observer to watch for new cards
-function setupMutationObserver() {
-  logger.info("Starting mutation observer setup...");
-
-  const observer = new MutationObserver((mutations) => {
-    logger.debug(
-      "Mutation observer callback triggered with",
-      mutations.length,
-      "mutations"
+function installMutationObserver() {
+  observer?.disconnect();
+  observer = new MutationObserver((mutations) => {
+    const hasAddedElements = mutations.some((mutation) =>
+      Array.from(mutation.addedNodes).some((node) => node instanceof Element),
     );
-    let hasNewCards = false;
 
-    for (const mutation of mutations) {
-      if (mutation.type === "childList") {
-        logger.debug(
-          "Processing childList mutation with",
-          mutation.addedNodes.length,
-          "added nodes"
-        );
-        // Check both added nodes and their children
-        for (const node of Array.from(mutation.addedNodes)) {
-          if (node instanceof Element) {
-            // Check the node itself
-            if (
-              node.hasAttribute("data-component") &&
-              (node.getAttribute("data-component") === "DiscoverOfferCard" ||
-                node.getAttribute("data-component") === "BrowseOfferCard" ||
-                node.getAttribute("data-component") === "VaultOfferCard")
-            ) {
-              logger.debug("Found new offer card in mutation:", node);
-              hasNewCards = true;
-              break;
-            }
-
-            // Check all children recursively
-            const cards = node.querySelectorAll(
-              '[data-component="DiscoverOfferCard"], [data-component="BrowseOfferCard"], [data-component="VaultOfferCard"]'
-            );
-            if (cards.length > 0) {
-              logger.debug(
-                `Found ${cards.length} new offer cards in mutation children`
-              );
-              hasNewCards = true;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    if (hasNewCards) {
-      logger.info("New offer cards detected, processing...");
-      // Add a small delay to ensure all cards are properly loaded
-      setTimeout(() => {
-        findAndProcessOfferCards();
-      }, 100);
+    if (hasAddedElements) {
+      scheduleScan();
+      scheduleProductPageScan();
     }
   });
 
-  // Start observing the document body for changes
   observer.observe(document.body, {
     childList: true,
     subtree: true,
-    attributes: true, // Watch for attribute changes
-    characterData: true,
   });
+}
 
-  logger.info(
-    "Mutation observer successfully set up and observing document.body"
-  );
+function initialize() {
+  if (initialized || typeof chrome === 'undefined') {
+    return;
+  }
+
+  initialized = true;
+  installUrlHooks();
+  installMutationObserver();
+  scheduleScan(100);
+  scheduleProductPageScan(250);
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', initialize, { once: true });
+} else {
+  initialize();
 }

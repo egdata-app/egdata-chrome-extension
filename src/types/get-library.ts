@@ -56,5 +56,5 @@ export interface Record {
   sandboxType: string;
   recordType: string;
   acquisitionDate: string;
-  dependencies: any[];
+  dependencies: unknown[];
 }

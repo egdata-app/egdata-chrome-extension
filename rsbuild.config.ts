@@ -2,7 +2,7 @@ import { defineConfig } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 import { TanStackRouterRspack } from '@tanstack/router-plugin/rspack';
 
-// const isProd = process.env.NODE_ENV === 'production';
+const isDev = process.env.NODE_ENV === 'development';
 const port = 3000;
 
 export default defineConfig({
@@ -37,7 +37,15 @@ export default defineConfig({
       },
       output: {
         target: 'web',
-        copy: [{ from: './public' }],
+        copy: [
+          {
+            from: isDev
+              ? './public/manifest.dev.json'
+              : './public/manifest.json',
+            to: './manifest.json',
+          },
+          { from: './public/icon.png', to: './icon.png' },
+        ],
       },
     },
     webworker: {

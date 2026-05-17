@@ -1,14 +1,14 @@
-import { StrictMode } from "react";
-import ReactDOM from "react-dom/client";
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   RouterProvider,
   createHashHistory,
   createRouter,
-} from "@tanstack/react-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+} from '@tanstack/react-router';
+import { StrictMode } from 'react';
+import ReactDOM from 'react-dom/client';
 
 // Import the generated route tree
-import { routeTree } from "./routeTree.gen";
+import { routeTree } from './routeTree.gen';
 
 const hashHistory = createHashHistory();
 
@@ -26,21 +26,21 @@ const queryClient = new QueryClient({
 const router = createRouter({
   routeTree,
   history: hashHistory,
-  basepath: "/main.html",
+  basepath: '/main.html',
   context: {
     queryClient,
   },
 });
 
 // Register the router instance for type safety
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router;
   }
 }
 
 // Render the app
-const rootElement = document.getElementById("root") as HTMLElement;
+const rootElement = document.getElementById('root') as HTMLElement;
 if (!rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement);
   root.render(
@@ -48,6 +48,6 @@ if (!rootElement.innerHTML) {
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
       </QueryClientProvider>
-    </StrictMode>
+    </StrictMode>,
   );
 }

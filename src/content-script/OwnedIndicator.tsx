@@ -1,42 +1,16 @@
-import { cn } from "@/lib/utils";
-import React, { useState } from "react";
+import { cn } from '@/lib/utils';
+import { CheckCircle2 } from 'lucide-react';
 
 export function OwnedIndicator() {
-  const [hovered, setHovered] = useState(false);
-
   return (
     <div
+      aria-label="Owned in your Epic Games library"
       className={cn(
-        "absolute top-2.5 left-2.5 z-10 flex items-center transition-all duration-200",
-        "h-7 rounded text-white shadow",
-        hovered ? "w-20 bg-blue-600" : "w-7 bg-blue-500"
+        'inline-flex h-7 items-center gap-1.5 rounded bg-blue-600 px-2 text-xs font-semibold text-white shadow',
       )}
-      style={{
-        fontFamily: "sans-serif",
-        pointerEvents: "none",
-      }}
     >
-      {/* Icon and text area - allow pointer events for hover */}
-      <div
-        className="flex flex-col items-center justify-center w-7 h-7 shrink-0"
-        style={{ pointerEvents: "auto" }}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      >
-        <div className="w-3 h-0.5 bg-white mb-0.5 rounded" />
-        <div className="w-3 h-0.5 bg-white mb-0.5 rounded" />
-        <div className="w-3 h-0.5 bg-white rounded" />
-      </div>
-
-      {/* Text - only visible on hover */}
-      {hovered && (
-        <span
-          className="ml-0.5 text-xs font-semibold whitespace-nowrap"
-          style={{ pointerEvents: "auto" }}
-        >
-          Owned
-        </span>
-      )}
+      <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" />
+      <span>Owned</span>
     </div>
   );
 }

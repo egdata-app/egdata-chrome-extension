@@ -1,19 +1,43 @@
-import { LibraryResponse } from '@/types/get-library';
+import type {
+  ApiResponse,
+  AuthStatus,
+  InternalMessage,
+  LibrarySearchParams,
+  LibrarySearchResult,
+  LibrarySyncStatus,
+  OfferLookupInput,
+  OfferPriceHistoryResult,
+  OwnedOffersResult,
+  OwnedSlugsResult,
+  PriceHistoryRequest,
+  Settings,
+} from '@/lib/messages';
 import consola from 'consola';
 
 const logger = consola.withTag('messaging');
 
 export class MessagingClient {
-  async sendMessage<T>(opts: unknown): Promise<T> {
+  async sendMessage<T>(message: InternalMessage): Promise<T> {
     return new Promise((resolve, reject) => {
       try {
-        chrome.runtime.sendMessage(opts, (response) => {
+        chrome.runtime.sendMessage(message, (response: ApiResponse<T>) => {
           if (chrome.runtime.lastError) {
             logger.error('Runtime error:', chrome.runtime.lastError);
             reject(new Error(chrome.runtime.lastError.message));
             return;
           }
-          resolve(response as T);
+
+          if (!response) {
+            reject(new Error('No response from background script'));
+            return;
+          }
+
+          if (!response.ok) {
+            reject(new Error(response.error));
+            return;
+          }
+
+          resolve(response.data);
         });
       } catch (error) {
         logger.error('Error sending message:', error);
@@ -22,44 +46,67 @@ export class MessagingClient {
     });
   }
 
-  async getEpicToken(): Promise<string> {
-    const response = await this.sendMessage<
-      { token: string } | { error: string }
-    >({
-      action: 'getEpicToken',
-    });
-
-    if ('error' in response) {
-      throw new Error(response.error);
-    }
-
-    return response.token;
+  getAuthStatus(): Promise<AuthStatus> {
+    return this.sendMessage<AuthStatus>({ action: 'auth.getStatus' });
   }
 
-  async getLibrary({
-    cursor,
-  }: { cursor?: string } = {}): Promise<LibraryResponse> {
-    const response = await this.sendMessage<
-      { library: LibraryResponse } | { error: string }
-    >({
-      action: 'getLibrary',
-      payload: { cursor, excludeNs: ['ue'] },
+  openEpicLogin(): Promise<{ tabId?: number }> {
+    return this.sendMessage<{ tabId?: number }>({ action: 'auth.openLogin' });
+  }
+
+  getLibraryStatus(): Promise<LibrarySyncStatus> {
+    return this.sendMessage<LibrarySyncStatus>({
+      action: 'library.getStatus',
     });
+  }
 
-    if (!response) {
-      throw new Error('No response from messaging client');
-    }
+  syncLibrary(): Promise<LibrarySyncStatus> {
+    return this.sendMessage<LibrarySyncStatus>({
+      action: 'library.sync',
+    });
+  }
 
-    if ('error' in response) {
-      logger.error('Error getting Epic Games library', response.error);
-      throw new Error(response.error);
-    }
+  searchLibrary(params: LibrarySearchParams): Promise<LibrarySearchResult> {
+    return this.sendMessage<LibrarySearchResult>({
+      action: 'library.search',
+      payload: params,
+    });
+  }
 
-    if (!response.library?.items) {
-      throw new Error('Invalid library response: missing items array');
-    }
+  checkOwnedSlugs(slugs: string[]): Promise<OwnedSlugsResult> {
+    return this.sendMessage<OwnedSlugsResult>({
+      action: 'ownership.checkSlugs',
+      payload: { slugs },
+    });
+  }
 
-    return response.library;
+  checkOwnedOffers(
+    offers: OfferLookupInput[],
+  ): Promise<OwnedOffersResult<OfferLookupInput>> {
+    return this.sendMessage<OwnedOffersResult<OfferLookupInput>>({
+      action: 'ownership.checkOffers',
+      payload: { offers },
+    });
+  }
+
+  getOfferPriceHistory(
+    request: PriceHistoryRequest,
+  ): Promise<OfferPriceHistoryResult> {
+    return this.sendMessage<OfferPriceHistoryResult>({
+      action: 'pricing.getOfferHistory',
+      payload: request,
+    });
+  }
+
+  getSettings(): Promise<Settings> {
+    return this.sendMessage<Settings>({ action: 'settings.get' });
+  }
+
+  updateSettings(patch: Partial<Settings>): Promise<Settings> {
+    return this.sendMessage<Settings>({
+      action: 'settings.update',
+      payload: patch,
+    });
   }
 }
 

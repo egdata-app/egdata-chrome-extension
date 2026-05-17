@@ -1,59 +1,57 @@
-import { messagingClient } from "@/lib/clients/messaging";
-import { createFileRoute, redirect } from "@tanstack/react-router";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import consola from "consola";
-import { librarySyncService } from "@/lib/services/library-sync";
-import type { Item } from "@/types/item";
-import { useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Card, CardContent } from "@/components/ui/card";
+} from '@/components/ui/select';
+import { useDebounce } from '@/hooks/use-debounce';
+import { messagingClient } from '@/lib/clients/messaging';
+import type { Item } from '@/types/item';
+import type { Offer } from '@/types/offer';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { createFileRoute, redirect } from '@tanstack/react-router';
 import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
   Loader2,
   RefreshCw,
-} from "lucide-react";
-import { toast } from "sonner";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import type { Offer } from "@/types/offer";
+} from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
 
-export const Route = createFileRoute("/library")({
+export const Route = createFileRoute('/library')({
   component: RouteComponent,
   loader: async () => {
-    const token = await messagingClient.getEpicToken();
+    const authStatus = await messagingClient.getAuthStatus();
 
-    if (!token) {
-      consola.error("No token found");
-      throw redirect({ to: "/" });
+    if (!authStatus.isAuthenticated) {
+      throw redirect({ to: '/' });
     }
 
-    return { token };
+    return { authStatus };
   },
 });
 
 function GameCard({ game }: { game: Item }) {
   // Find the best cover image
   const cover =
-    game.keyImages.find((img) => img.type === "OfferImageWide") ||
+    game.keyImages.find((img) => img.type === 'OfferImageWide') ||
     game.keyImages[0];
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
+    toast.success('Copied to clipboard');
   };
 
   return (
@@ -99,14 +97,14 @@ function DynamicItems({ id }: { id: string }) {
     isLoading: isOfferLoading,
     isError: isOfferError,
   } = useQuery({
-    queryKey: ["item", "base-offer", id],
+    queryKey: ['item', 'base-offer', id],
     queryFn: () =>
       fetch(`https://api-gcp.egdata.app/items/${id}/offer`).then(
-        (res) => res.json() as Promise<Offer | { error: string }>
+        (res) => res.json() as Promise<Offer | { error: string }>,
       ),
   });
 
-  if ((isOfferError || !offer || "error" in offer) && !isOfferLoading) {
+  if ((isOfferError || !offer || 'error' in offer) && !isOfferLoading) {
     return null;
   }
 
@@ -130,23 +128,23 @@ function DynamicItems({ id }: { id: string }) {
   }
 
   const calculateSlug = (offer: Offer) => {
-    const urlType: "product" | "url" =
-      offer.offerType === "BASE_GAME" ? "product" : "url";
-    const isBundle = offer.offerType === "BUNDLE";
-    const namespace = isBundle ? "bundles" : "product";
+    const urlType: 'product' | 'url' =
+      offer.offerType === 'BASE_GAME' ? 'product' : 'url';
+    const isBundle = offer.offerType === 'BUNDLE';
+    const namespace = isBundle ? 'bundles' : 'product';
     const url =
-      offer.customAttributes?.["com.epicgames.app.productSlug"]?.value ??
+      offer.customAttributes?.['com.epicgames.app.productSlug']?.value ??
       offer.offerMappings?.[0]?.pageSlug ??
       offer.urlSlug ??
-      (urlType === "product" ? offer.productSlug : offer.urlSlug);
+      (urlType === 'product' ? offer.productSlug : offer.urlSlug);
 
     if (!url) {
       return null;
     }
 
     const storeUrl = `https://egdata.app/store/${namespace}/${url.replaceAll(
-      "-pp",
-      ""
+      '-pp',
+      '',
     )}?id=${offer.id}&ns=${offer.namespace}`;
 
     return storeUrl;
@@ -159,22 +157,22 @@ function DynamicItems({ id }: { id: string }) {
       <ContextMenuItem
         onClick={() => {
           if (storeUrl) {
-            window.open(storeUrl, "_blank");
+            window.open(storeUrl, '_blank');
           }
         }}
         disabled={!storeUrl}
       >
-        {storeUrl ? "Open Epic Games Store" : "No store URL found"}
+        {storeUrl ? 'Open egdata store page' : 'No store URL found'}
       </ContextMenuItem>
       <ContextMenuItem
         onClick={() =>
           window.open(
             `https://egdata.app/offers/${(offer as Offer).id}`,
-            "_blank"
+            '_blank',
           )
         }
       >
-        Open egdata.app
+        Open egdata offer
       </ContextMenuItem>
     </>
   );
@@ -182,12 +180,13 @@ function DynamicItems({ id }: { id: string }) {
 
 function RouteComponent() {
   const [page, setPage] = useState(1);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState<"lastModifiedDate" | "title">(
-    "lastModifiedDate"
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'lastModifiedDate' | 'title'>(
+    'lastModifiedDate',
   );
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [isSyncing, setIsSyncing] = useState(false);
+  const debouncedSearchQuery = useDebounce(searchQuery, 250);
   const pageSize = 16;
 
   const {
@@ -196,12 +195,12 @@ function RouteComponent() {
     error: itemsError,
     refetch: refetchItems,
   } = useQuery({
-    queryKey: ["library-items", page, searchQuery, sortBy, sortOrder],
+    queryKey: ['library-items', page, debouncedSearchQuery, sortBy, sortOrder],
     queryFn: () =>
-      librarySyncService.searchItems({
+      messagingClient.searchLibrary({
         page,
         pageSize,
-        searchQuery,
+        searchQuery: debouncedSearchQuery,
         sortBy,
         sortOrder,
       }),
@@ -211,18 +210,14 @@ function RouteComponent() {
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      const response = await chrome.runtime.sendMessage({
-        action: "syncLibrary",
-      });
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      toast.success("Library sync completed successfully");
+      await messagingClient.syncLibrary();
+      toast.success('Library sync completed successfully');
       // Refetch items to show updated data
       await refetchItems();
     } catch (error) {
-      consola.error("Failed to sync library", error);
-      toast.error("Failed to sync library");
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to sync library',
+      );
     } finally {
       setIsSyncing(false);
     }
@@ -266,9 +261,9 @@ function RouteComponent() {
             className="gap-2"
           >
             <RefreshCw
-              className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`}
+              className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`}
             />
-            {isSyncing ? "Syncing..." : "Sync Library"}
+            {isSyncing ? 'Syncing...' : 'Sync Library'}
           </Button>
         </div>
 
@@ -287,7 +282,7 @@ function RouteComponent() {
           <div className="flex gap-2">
             <Select
               value={sortBy}
-              onValueChange={(value: "lastModifiedDate" | "title") =>
+              onValueChange={(value: 'lastModifiedDate' | 'title') =>
                 setSortBy(value)
               }
             >
@@ -302,7 +297,7 @@ function RouteComponent() {
             <Button
               variant="outline"
               size="icon"
-              onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
             >
               <ArrowUpDown className="h-4 w-4" />
             </Button>
@@ -312,9 +307,13 @@ function RouteComponent() {
 
       {/* Game Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-        {items.map((game) => (
-          <GameCard key={game.id} game={game} />
-        ))}
+        {items.length > 0 ? (
+          items.map((game) => <GameCard key={game.id} game={game} />)
+        ) : (
+          <div className="col-span-full rounded border border-dashed p-8 text-center text-muted-foreground">
+            No library items found
+          </div>
+        )}
       </div>
 
       {/* Pagination */}

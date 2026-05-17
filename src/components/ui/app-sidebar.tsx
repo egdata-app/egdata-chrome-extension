@@ -1,4 +1,4 @@
-import { Home, Library } from "lucide-react";
+import { Home, Library } from 'lucide-react';
 
 import {
   Sidebar,
@@ -9,19 +9,19 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-} from "@/components/ui/sidebar";
-import { Link } from "@tanstack/react-router";
+} from '@/components/ui/sidebar';
+import { Link } from '@tanstack/react-router';
 
 // Menu items.
 const items = [
   {
-    title: "Home",
-    url: "/",
+    title: 'Home',
+    url: '/',
     icon: Home,
   },
   {
-    title: "Library",
-    url: "/library",
+    title: 'Library',
+    url: '/library',
     icon: Library,
   },
 ];

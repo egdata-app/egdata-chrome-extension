@@ -40,6 +40,11 @@ export async function getOffersValidation(
       },
     },
   );
+
+  if (!response.ok) {
+    throw new Error(`Failed to validate offers: ${response.status}`);
+  }
+
   return response.json() as Promise<OfferValidationResponse>;
 }
 
@@ -48,7 +53,7 @@ export class EpicGamesGraphQLClient {
   private logger = consola.withTag('epic-client');
 
   constructor({ token }: { token: string }) {
-    this.logger.info('Initializing Epic Games GraphQL client');
+    this.logger.debug('Initializing Epic Games GraphQL client');
     this.client = new ApolloClient({
       uri: 'https://store.epicgames.com/graphql',
       cache: new InMemoryCache(),
@@ -77,7 +82,7 @@ export class EpicGamesGraphQLClient {
     platform?: string;
     includeCategories?: string[];
   }) {
-    this.logger.info('Getting Epic Games library', {
+    this.logger.debug('Getting Epic Games library', {
       includeMetadata,
       cursor,
       excludeNs,
@@ -131,7 +136,7 @@ export class EpicGamesGraphQLClient {
         }
       }
 
-      this.logger.info('Epic Games library URL', url);
+      this.logger.debug('Epic Games library URL', url.toString());
 
       const response = await fetch(url, {
         headers: {
@@ -142,13 +147,18 @@ export class EpicGamesGraphQLClient {
         throw error;
       });
 
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch Epic Games library: ${response.status}`,
+        );
+      }
+
       const data = await response.json();
 
-      this.logger.info('Epic Games library data', {
-        hasItems: !!data.items,
-        itemsLength: data.items?.length,
+      this.logger.debug('Epic Games library data', {
+        hasRecords: !!data.records,
+        recordsLength: data.records?.length,
         dataKeys: Object.keys(data),
-        firstItem: data.items?.[0],
       });
 
       return data;

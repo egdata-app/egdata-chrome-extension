@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "version": "0.1.0",
-  "name": "egdata.app",
+  "version": "0.1.0-dev",
+  "name": "egdata.app dev",
   "description": "Epic Games library ownership tools for egdata.app.",
   "background": {
     "service_worker": "static/js/background.js"
   },
   "action": {
-    "default_title": "egdata.app"
+    "default_title": "egdata.app dev"
   },
   "icons": {
     "128": "icon.png"
@@ -23,9 +23,14 @@
   "host_permissions": [
     "https://store.epicgames.com/*",
     "https://*.epicgames.com/*",
-    "https://*.egdata.app/*"
+    "https://*.egdata.app/*",
+    "http://localhost/*"
   ],
   "externally_connectable": {
-    "matches": ["https://egdata.app/*", "https://*.egdata.app/*"]
+    "matches": [
+      "https://egdata.app/*",
+      "https://*.egdata.app/*",
+      "http://localhost/*"
+    ]
   }
 }

@@ -3,7 +3,12 @@
   "private": true,
   "scripts": {
     "dev": "rsbuild dev",
-    "build": "rimraf dist && rsbuild build && bestzip dist/egdata-chrome-extension.zip dist/*"
+    "build": "rimraf dist && rsbuild build && bestzip dist/egdata-chrome-extension.zip dist/*",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
   },
   "keywords": [],
   "author": "",
@@ -12,9 +17,11 @@
     "@apollo/client": "^3.13.8",
     "@radix-ui/react-context-menu": "^2.2.15",
     "@radix-ui/react-dialog": "^1.1.14",
+    "@radix-ui/react-hover-card": "^1.1.15",
     "@radix-ui/react-select": "^2.2.5",
     "@radix-ui/react-separator": "^1.1.7",
     "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.7",
     "@tailwindcss/postcss": "^4.1.7",
     "@tanstack/react-query": "^5.76.1",
@@ -32,6 +39,7 @@
     "postcss-loader": "^8.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "recharts": "^3.8.1",
     "sonner": "^2.0.3",
     "tailwind-merge": "^3.3.0",
     "tailwindcss": "^4.1.7",
@@ -48,10 +56,23 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "bestzip": "2.2.1",
+    "jsdom": "^29.1.1",
     "rimraf": "6.0.1",
-    "typescript": "^5.5.2"
+    "typescript": "^5.5.2",
+    "vitest": "^4.1.6"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@biomejs/biome", "@tailwindcss/oxide"]
+    "allowBuilds": {
+      "@biomejs/biome": true,
+      "@tailwindcss/oxide": true,
+      "core-js": true,
+      "esbuild": true
+    },
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "@tailwindcss/oxide",
+      "core-js",
+      "esbuild"
+    ]
   }
 }
