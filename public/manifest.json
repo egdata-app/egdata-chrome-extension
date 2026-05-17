@@ -25,7 +25,7 @@
       "matches": ["https://*/*"]
     }
   ],
-  "permissions": ["cookies", "storage", "alarms"],
+  "permissions": ["cookies", "storage", "alarms", "notifications"],
   "host_permissions": [
     "https://store.epicgames.com/*",
     "https://*.epicgames.com/*",

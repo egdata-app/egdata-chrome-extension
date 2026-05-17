@@ -1,40 +1,79 @@
 import { cn } from "@/lib/utils";
-import React, { useState } from "react";
+import type { OwnershipStatus } from "@/types/egdata";
+import { Check, GitCompareArrows, Lock, ShieldAlert } from "lucide-react";
+import { useState } from "react";
 
-export function OwnedIndicator() {
+const STATUS_META: Record<
+  OwnershipStatus,
+  { label: string; className: string; Icon: typeof Check }
+> = {
+  owned: {
+    label: "Owned",
+    className: "bg-emerald-600",
+    Icon: Check,
+  },
+  "partial-upgrade": {
+    label: "Upgrade",
+    className: "bg-blue-600",
+    Icon: GitCompareArrows,
+  },
+  duplicate: {
+    label: "Duplicate",
+    className: "bg-amber-600",
+    Icon: ShieldAlert,
+  },
+  "missing-prerequisite": {
+    label: "Needs base",
+    className: "bg-rose-600",
+    Icon: Lock,
+  },
+  "not-owned": {
+    label: "Not owned",
+    className: "bg-neutral-700",
+    Icon: ShieldAlert,
+  },
+  unknown: {
+    label: "Unknown",
+    className: "bg-neutral-700",
+    Icon: ShieldAlert,
+  },
+};
+
+export function OwnedIndicator({
+  status = "owned",
+}: {
+  status?: OwnershipStatus;
+}) {
   const [hovered, setHovered] = useState(false);
+  const meta = STATUS_META[status] ?? STATUS_META.unknown;
+  const Icon = meta.Icon;
 
   return (
     <div
       className={cn(
-        "absolute top-2.5 left-2.5 z-10 flex items-center transition-all duration-200",
-        "h-7 rounded text-white shadow",
-        hovered ? "w-20 bg-blue-600" : "w-7 bg-blue-500"
+        "absolute top-2.5 left-2.5 z-10 flex h-7 items-center rounded text-white shadow transition-all duration-200",
+        hovered ? "w-28" : "w-7",
+        meta.className,
       )}
       style={{
         fontFamily: "sans-serif",
         pointerEvents: "none",
       }}
     >
-      {/* Icon and text area - allow pointer events for hover */}
       <div
-        className="flex flex-col items-center justify-center w-7 h-7 shrink-0"
+        className="flex h-7 w-7 shrink-0 items-center justify-center"
         style={{ pointerEvents: "auto" }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <div className="w-3 h-0.5 bg-white mb-0.5 rounded" />
-        <div className="w-3 h-0.5 bg-white mb-0.5 rounded" />
-        <div className="w-3 h-0.5 bg-white rounded" />
+        <Icon className="h-4 w-4" />
       </div>
-
-      {/* Text - only visible on hover */}
       {hovered && (
         <span
-          className="ml-0.5 text-xs font-semibold whitespace-nowrap"
+          className="ml-0.5 truncate pr-2 text-xs font-semibold"
           style={{ pointerEvents: "auto" }}
         >
-          Owned
+          {meta.label}
         </span>
       )}
     </div>

@@ -1,6 +1,5 @@
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
-import { Toaster } from "@/components/ui/toaster";
 import { QueryClient } from "@tanstack/react-query";
 
 const queryClient = new QueryClient();
@@ -19,12 +18,7 @@ declare module "@tanstack/react-router" {
 }
 
 function App() {
-  return (
-    <>
-      <RouterProvider router={router} />
-      <Toaster />
-    </>
-  );
+  return <RouterProvider router={router} />;
 }
 
 export default App;
