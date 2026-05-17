@@ -4,6 +4,17 @@ import {
   getOffersValidation,
 } from '@/lib/clients/epic';
 import { librarySyncService } from '../lib/services/library-sync';
+import { egdataClient } from '@/lib/clients/egdata';
+import { settingsService } from '@/lib/services/settings';
+import {
+  watchlistNotificationMessage,
+  watchlistService,
+} from '@/lib/services/watchlist';
+import type {
+  OwnershipStatus,
+  OwnershipStatusResult,
+  WatchlistItem,
+} from '@/types/egdata';
 
 const logger = consola.withTag('background');
 
@@ -32,6 +43,7 @@ async function initializeEpicClient() {
       epicClient = new EpicGamesGraphQLClient({
         token: authCookie.value,
       });
+      isInitializing = false;
     } else {
       logger.warn(
         'Epic Games authentication cookie not found - user is not logged in',
@@ -60,6 +72,7 @@ async function initializeEpicClient() {
     }
   } catch (error) {
     logger.error('Failed to initialize Epic Games client:', error);
+    isInitializing = false;
   }
 }
 
@@ -109,11 +122,188 @@ async function startLibrarySync() {
   }
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Unknown error';
+}
+
+function getOfferIdentifier(offer: {
+  namespace: string;
+  id?: string;
+  offerId?: string;
+}) {
+  return {
+    namespace: offer.namespace,
+    offerId: offer.offerId ?? offer.id ?? '',
+  };
+}
+
+function buildOwnershipStatuses(
+  offers: Array<{ namespace: string; id?: string; offerId?: string }>,
+  validationResult: {
+    conflictingOffers?: Array<{ namespace: string; offerId: string }>;
+    missingPrerequisites?: Array<{ namespace: string; offerId: string }>;
+    fullyOwnedOffers?: Array<{ namespace: string; offerId: string }>;
+    possiblePartialUpgradeOffers?: Array<{ namespace: string; offerId: string }>;
+    unablePartiallyUpgradeOffers?: Array<{ namespace: string; offerId: string }>;
+  },
+): OwnershipStatusResult[] {
+  const statusByKey = new Map<string, OwnershipStatus>();
+  const setStatus = (
+    items: Array<{ namespace: string; offerId: string }> | undefined,
+    status: OwnershipStatus,
+  ) => {
+    for (const item of items ?? []) {
+      statusByKey.set(`${item.namespace}-${item.offerId}`, status);
+    }
+  };
+
+  setStatus(validationResult.fullyOwnedOffers, 'owned');
+  setStatus(validationResult.conflictingOffers, 'duplicate');
+  setStatus(validationResult.possiblePartialUpgradeOffers, 'partial-upgrade');
+  setStatus(validationResult.unablePartiallyUpgradeOffers, 'partial-upgrade');
+  setStatus(validationResult.missingPrerequisites, 'missing-prerequisite');
+
+  return offers.map((offer) => {
+    const { namespace, offerId } = getOfferIdentifier(offer);
+    return {
+      namespace,
+      offerId,
+      status: statusByKey.get(`${namespace}-${offerId}`) ?? 'not-owned',
+    };
+  });
+}
+
+async function getHealthSnapshot() {
+  const [settings, syncMetadata, libraryItems, watchlistCount] =
+    await Promise.all([
+      settingsService.getSettings(),
+      librarySyncService.getSyncMetadata(),
+      librarySyncService.getAllItems().catch(() => []),
+      watchlistService.count().catch(() => 0),
+    ]);
+  const authCookie = await chrome.cookies.get({
+    name: 'EPIC_EG1',
+    url: 'https://store.epicgames.com',
+  });
+
+  return {
+    isAuthenticated: Boolean(authCookie?.value),
+    ownedItemCount: libraryItems.length,
+    lastSyncAt: syncMetadata.lastCompletedAt,
+    lastSyncStatus: syncMetadata.status,
+    lastSyncError: syncMetadata.lastError,
+    overlayEnabled: settings.overlayEnabled,
+    notificationsEnabled: settings.notificationsEnabled,
+    country: settings.country,
+    watchlistCount,
+    cache: {
+      offerCacheCount: await watchlistService.getOfferCacheCount().catch(() => 0),
+    },
+  };
+}
+
+async function notifyWatchlistHits(triggered: WatchlistItem[]) {
+  const settings = await settingsService.getSettings();
+  if (
+    !settings.notificationsEnabled ||
+    !settings.dealAlertsEnabled ||
+    !chrome.notifications
+  ) {
+    return;
+  }
+
+  for (const item of triggered) {
+    await chrome.notifications.create(`watchlist-${item.key}`, {
+      type: 'basic',
+      iconUrl: 'icon.png',
+      title: 'EGDATA watched deal',
+      message: watchlistNotificationMessage(item),
+    });
+
+    await watchlistService.upsert({
+      ...item,
+      lastNotifiedPrice: item.currentPrice?.discountPrice ?? null,
+    });
+  }
+}
+
+async function notifyFreeGameReminders() {
+  const settings = await settingsService.getSettings();
+  if (
+    !settings.notificationsEnabled ||
+    !settings.freeGameRemindersEnabled ||
+    !chrome.notifications
+  ) {
+    return;
+  }
+
+  const freeGames = await egdataClient.getFreeGames(settings.country);
+  const now = Date.now();
+  const oneDay = 24 * 60 * 60 * 1000;
+  const reminders = await chrome.storage.local.get('egdata-free-reminders');
+  const notified = new Set<string>(reminders['egdata-free-reminders'] ?? []);
+
+  for (const offer of freeGames) {
+    const endDate = offer.giveaway?.endDate;
+    if (!endDate) {
+      continue;
+    }
+
+    const diff = new Date(endDate).getTime() - now;
+    const key = `${offer.namespace}:${offer.id}:${endDate}`;
+    if (diff <= 0 || diff > oneDay || notified.has(key)) {
+      continue;
+    }
+
+    await chrome.notifications.create(`free-game-${key}`, {
+      type: 'basic',
+      iconUrl: 'icon.png',
+      title: 'Epic free game ending soon',
+      message: `${offer.title} leaves the free games rotation within 24 hours.`,
+    });
+    notified.add(key);
+  }
+
+  await chrome.storage.local.set({
+    'egdata-free-reminders': Array.from(notified).slice(-50),
+  });
+}
+
+async function runAssistantChecks() {
+  const settings = await settingsService.getSettings();
+  const watchlistResult = await watchlistService.checkPrices(settings.country);
+  await notifyWatchlistHits(watchlistResult.triggered);
+  await notifyFreeGameReminders();
+  return watchlistResult;
+}
+
+async function ensureAssistantAlarm() {
+  const settings = await settingsService.getSettings();
+  const shouldRun =
+    settings.notificationsEnabled &&
+    (settings.dealAlertsEnabled || settings.freeGameRemindersEnabled);
+
+  if (shouldRun) {
+    chrome.alarms.create('assistant-checks', { periodInMinutes: 60 });
+  } else {
+    chrome.alarms.clear('assistant-checks');
+  }
+}
+
 // Initialize client and start sync when extension starts
 chrome.runtime.onStartup.addListener(async () => {
   logger.info('Extension started');
   await initializeEpicClient();
   await startLibrarySync();
+  await ensureAssistantAlarm();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'assistant-checks') {
+    runAssistantChecks().catch((error) => {
+      logger.error('Failed to run assistant checks:', error);
+    });
+  }
 });
 
 // Handle manual activation (when user clicks the extension icon)
@@ -140,6 +330,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
               // Close the Epic Games Store tab
               chrome.tabs.remove(tabId);
               await startLibrarySync();
+              await ensureAssistantAlarm();
             }
           };
           // Add the listener
@@ -274,6 +465,96 @@ chrome.tabs.onUpdated.addListener(async () => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   logger.info('Received message:', request.action, request);
+
+  const respond = (handler: () => Promise<unknown>) => {
+    handler()
+      .then((response) => sendResponse(response))
+      .catch((error) => {
+        logger.error(`Error handling ${request.action}:`, error);
+        sendResponse({ error: errorMessage(error) });
+      });
+    return true;
+  };
+
+  if (request.action === 'getHealth') {
+    return respond(async () => ({
+      health: await getHealthSnapshot(),
+    }));
+  }
+
+  if (request.action === 'getSettings') {
+    return respond(async () => ({
+      settings: await settingsService.getSettings(),
+    }));
+  }
+
+  if (request.action === 'updateSettings') {
+    return respond(async () => {
+      const settings = await settingsService.updateSettings(request.payload ?? {});
+      await ensureAssistantAlarm();
+      return { settings };
+    });
+  }
+
+  if (request.action === 'getFreeGames') {
+    return respond(async () => {
+      const settings = await settingsService.getSettings();
+      return {
+        freeGames: await egdataClient.getFreeGames(settings.country),
+      };
+    });
+  }
+
+  if (request.action === 'getWatchlist') {
+    return respond(async () => ({
+      watchlist: await watchlistService.getAll(),
+    }));
+  }
+
+  if (request.action === 'updateWatchlist') {
+    return respond(async () => {
+      const payload = request.payload;
+      if (payload?.type === 'remove') {
+        await watchlistService.remove(payload.namespace, payload.offerId);
+        return { item: null };
+      }
+
+      if (payload?.type === 'upsert') {
+        return {
+          item: await watchlistService.upsert(payload.item),
+        };
+      }
+
+      throw new Error('Invalid watchlist payload');
+    });
+  }
+
+  if (request.action === 'checkWatchlist') {
+    return respond(async () => runAssistantChecks());
+  }
+
+  if (request.action === 'clearOfferCache') {
+    return respond(async () => {
+      await watchlistService.clearOfferCache();
+      return { success: true };
+    });
+  }
+
+  if (request.action === 'searchLibrary') {
+    return respond(async () => librarySyncService.searchItems(request.payload));
+  }
+
+  if (request.action === 'getLibraryChanges') {
+    return respond(async () => ({
+      changes: await librarySyncService.getLibraryChanges(),
+    }));
+  }
+
+  if (request.action === 'getLibraryFilterOptions') {
+    return respond(async () => ({
+      options: await librarySyncService.getFilterOptions(),
+    }));
+  }
 
   if (request.action === 'getEpicToken') {
     logger.info('Getting Epic Games token');
@@ -425,6 +706,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers,
         );
 
+        const ownershipStatuses = buildOwnershipStatuses(
+          epicOffersPayload,
+          validationResult.Entitlements.cartOffersValidation,
+        );
+
         // Step 5: Identify owned slugs
         const ownedEpicOffersSet = new Set(
           validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
@@ -442,6 +728,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({
           ownedSlugs: ownedSlugsResult,
           offerMappings: offerMappingsFromEgdata,
+          ownershipStatuses,
         });
       } catch (error) {
         logger.error('Error processing getOwnedSlugs:', error);
@@ -498,19 +785,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           validationResult.fullyOwnedOffers,
         );
 
+        const ownershipStatuses = buildOwnershipStatuses(
+          offers,
+          validationResult,
+        );
         const ownedEpicOffersSet = new Set(
-          validationResult.fullyOwnedOffers.map(
-            (ownedOffer: { offerId: string; namespace: string }) =>
-              `${ownedOffer.namespace}-${ownedOffer.offerId}`,
-          ),
+          ownershipStatuses
+            .filter((status) => status.status === 'owned')
+            .map((status) => `${status.namespace}-${status.offerId}`),
         );
 
-        const ownedOffersResult = offers.filter((o) =>
-          ownedEpicOffersSet.has(`${o.namespace}-${o.offerId}`),
-        );
+        const ownedOffersResult = offers.filter((o) => {
+          const { namespace, offerId } = getOfferIdentifier(o);
+          return ownedEpicOffersSet.has(`${namespace}-${offerId}`);
+        });
 
         logger.info('Owned offers determined:', ownedOffersResult);
-        sendResponse({ ownedOffers: ownedOffersResult });
+        sendResponse({ ownedOffers: ownedOffersResult, ownershipStatuses });
       } catch (error) {
         logger.error('Error processing getOwnedOffers:', error);
         sendResponse({
@@ -561,6 +852,14 @@ chrome.runtime.onMessageExternal.addListener(
             authCookie.value,
           );
 
+          const ownershipStatuses = buildOwnershipStatuses(
+            offers.map((offer) => ({
+              namespace: offer.namespace,
+              offerId: offer.id,
+            })),
+            validationResult,
+          );
+
           // Combine fullyOwnedOffers and conflictingOffers as owned
           const fullyOwned = validationResult.fullyOwnedOffers ?? [];
 
@@ -577,7 +876,7 @@ chrome.runtime.onMessageExternal.addListener(
           logger.info('Fully owned offers:', fullyOwned);
 
           logger.info('Owned offers determined (external):', ownedOffersResult);
-          sendResponse({ ownedOffers: ownedOffersResult });
+          sendResponse({ ownedOffers: ownedOffersResult, ownershipStatuses });
         } catch (error) {
           logger.error('Error processing EXTERNAL getOwnedOffers:', error);
           sendResponse({
@@ -670,6 +969,10 @@ chrome.runtime.onMessageExternal.addListener(
             'Epic ownership validation result (external):',
             validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers,
           );
+          const ownershipStatuses = buildOwnershipStatuses(
+            epicOffersPayload,
+            validationResult.Entitlements.cartOffersValidation,
+          );
           const ownedEpicOffersSet = new Set(
             validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
               (ownedOffer: { offerId: string; namespace: string }) =>
@@ -702,6 +1005,7 @@ chrome.runtime.onMessageExternal.addListener(
           sendResponse({
             ownedSlugs: ownedSlugsResult,
             offerMappings: offerMappingsFromEgdata,
+            ownershipStatuses,
           });
         } catch (error) {
           logger.error('Error processing EXTERNAL getOwnedSlugs:', error);

@@ -1,150 +1,196 @@
-import consola from 'consola';
-import { openDB, type IDBPDatabase } from 'idb';
-import type { LibraryResponse } from '@/types/get-library';
-import type { Item } from '@/types/item';
-import { EpicGamesGraphQLClient } from '@/lib/clients/epic';
+import consola from "consola";
+import { openDB, type IDBPDatabase } from "idb";
+import type {
+  LibraryResponse,
+  Record as LibraryRecord,
+} from "@/types/get-library";
+import type { Item } from "@/types/item";
+import { EpicGamesGraphQLClient } from "@/lib/clients/epic";
+import type { SyncMetadata } from "@/types/egdata";
+import { itemHasStorePage } from "@/lib/offer-utils";
 
-const logger = consola.withTag('library-sync');
+const logger = consola.withTag("library-sync");
 
 interface BulkResponse {
   items: Record<string, Item>;
 }
 
+export interface LibraryItemRecord extends Item {
+  acquisitionDate?: string;
+  ownedRecordType?: string;
+  lastSeenInLibrarySync?: string;
+}
+
+export interface LibrarySearchFilters {
+  itemType?: string;
+  namespace?: string;
+  developer?: string;
+  category?: string;
+  platform?: string;
+  status?: string;
+  unsearchable?: "all" | "yes" | "no";
+  endOfSupport?: "all" | "yes" | "no";
+  requiresSecureAccount?: "all" | "yes" | "no";
+  storePage?: "all" | "yes" | "no";
+}
+
+export interface LibrarySearchResult {
+  items: LibraryItemRecord[];
+  allItems: LibraryItemRecord[];
+  pagination: {
+    currentPage: number;
+    totalPages: number;
+    totalItems: number;
+    pageSize: number;
+  };
+}
+
 export class LibrarySyncService {
-  private db: IDBPDatabase | null = null;
-  private readonly DB_NAME = 'egdata-library';
-  private readonly STORE_NAME = 'library-items';
-  private readonly SYNC_INTERVAL = 5; // 5 minutes
+  private readonly DB_NAME = "egdata-library";
+  private readonly DB_VERSION = 2;
+  private readonly STORE_NAME = "library-items";
+  private readonly META_STORE_NAME = "sync-metadata";
+  private readonly SYNC_INTERVAL = 5;
+  private readonly META_KEY = "latest";
+  private dbPromise: Promise<IDBPDatabase>;
   private currentLibrary: LibraryResponse | null = null;
   private epicClient: EpicGamesGraphQLClient | null = null;
 
   constructor() {
-    this.initializeDB();
+    this.dbPromise = this.initializeDB();
     this.setupAlarmListener();
   }
 
+  private initializeDB() {
+    return openDB(this.DB_NAME, this.DB_VERSION, {
+      upgrade: (db) => {
+        if (!db.objectStoreNames.contains(this.STORE_NAME)) {
+          db.createObjectStore(this.STORE_NAME, { keyPath: "id" });
+          logger.debug(`Created object store: ${this.STORE_NAME}`);
+        }
+
+        if (!db.objectStoreNames.contains(this.META_STORE_NAME)) {
+          db.createObjectStore(this.META_STORE_NAME, { keyPath: "key" });
+          logger.debug(`Created object store: ${this.META_STORE_NAME}`);
+        }
+      },
+    });
+  }
+
+  private async db() {
+    return this.dbPromise;
+  }
+
   private setupAlarmListener() {
+    if (typeof chrome === "undefined" || !chrome.alarms?.onAlarm) {
+      return;
+    }
+
     chrome.alarms.onAlarm.addListener((alarm) => {
-      if (alarm.name === 'library-sync' && this.currentLibrary) {
+      if (alarm.name === "library-sync" && this.currentLibrary) {
         this.syncLibrary(this.currentLibrary).catch((error) => {
-          logger.error('Error in alarm sync:', error);
+          logger.error("Error in alarm sync:", error);
         });
       }
     });
   }
 
-  private async initializeDB() {
-    try {
-      this.db = await openDB(this.DB_NAME, 1, {
-        upgrade(db) {
-          if (!db.objectStoreNames.contains('library-items')) {
-            db.createObjectStore('library-items', { keyPath: 'id' });
-            logger.debug('Created object store: library-items');
-          }
-        },
-      });
-      logger.debug('IndexedDB initialized successfully');
-    } catch (error) {
-      logger.error('Error opening IndexedDB:', error);
-      throw error;
-    }
+  private emptyMetadata(): SyncMetadata {
+    return {
+      status: "idle",
+      totalItems: 0,
+      addedItemIds: [],
+      removedItemIds: [],
+      updatedItemIds: [],
+      lastError: null,
+    };
   }
 
-  private async saveToIndexedDB(items: Record<string, Item>) {
-    if (!this.db) {
-      throw new Error('Database not initialized');
+  private async saveSyncMetadata(metadata: SyncMetadata) {
+    const db = await this.db();
+    await db.put(this.META_STORE_NAME, {
+      key: this.META_KEY,
+      ...metadata,
+    });
+  }
+
+  public async getSyncMetadata(): Promise<SyncMetadata> {
+    const db = await this.db();
+    const metadata = await db.get(this.META_STORE_NAME, this.META_KEY);
+    if (!metadata) {
+      return this.emptyMetadata();
     }
 
-    try {
-      const tx = this.db.transaction(this.STORE_NAME, 'readwrite');
-      const store = tx.objectStore(this.STORE_NAME);
+    const { key: _key, ...rest } = metadata as SyncMetadata & { key: string };
+    return rest;
+  }
 
-      // Clear existing data
-      await store.clear();
+  private async saveToIndexedDB(items: Record<string, LibraryItemRecord>) {
+    const db = await this.db();
+    const tx = db.transaction(this.STORE_NAME, "readwrite");
+    const store = tx.objectStore(this.STORE_NAME);
 
-      // Add new items
-      await Promise.all(
-        Object.entries(items).map(([, data]) => store.put(data)),
-      );
-
-      await tx.done;
-      logger.debug('Successfully saved items to IndexedDB');
-    } catch (error) {
-      logger.error('Error saving to IndexedDB:', error);
-      throw error;
-    }
+    await store.clear();
+    await Promise.all(Object.values(items).map((data) => store.put(data)));
+    await tx.done;
+    logger.debug("Successfully saved items to IndexedDB");
   }
 
   private async fetchBulkData(items: string[]): Promise<BulkResponse> {
-    try {
-      const BATCH_SIZE = 100;
-      const batches = [];
+    const BATCH_SIZE = 100;
+    const batches = [];
 
-      // Split items into batches of 100
-      for (let i = 0; i < items.length; i += BATCH_SIZE) {
-        batches.push(items.slice(i, i + BATCH_SIZE));
-      }
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+      batches.push(items.slice(i, i + BATCH_SIZE));
+    }
 
-      // Fetch each batch and combine results
-      const results = await Promise.all(
-        batches.map(async (batch, index) => {
-          logger.debug(`Fetching batch ${index + 1} of ${batches.length}`);
+    const results = await Promise.all(
+      batches.map(async (batch, index) => {
+        logger.debug(`Fetching batch ${index + 1} of ${batches.length}`);
 
-          const response = await fetch(
-            'https://api-gcp.egdata.app/items/bulk',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ items: batch }),
-            },
-          );
+        const response = await fetch("https://api-gcp.egdata.app/items/bulk", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ items: batch }),
+        });
 
-          if (!response.ok) {
-            logger.error(`HTTP error! status: ${response.status}`);
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-          const json = await response.json();
-          logger.debug(`Fetched batch ${index + 1} of ${batches.length}`);
+        return response.json() as Promise<Item[]>;
+      }),
+    );
 
-          return json as Item[];
-        }),
-      );
-
-      // Combine all batch results
-      const combinedResults = results.reduce((acc, items) => {
+    const combinedResults = results.reduce<Record<string, Item>>(
+      (acc, items) => {
         if (!Array.isArray(items)) {
-          logger.warn('Invalid response from bulk API:', items);
+          logger.warn("Invalid response from bulk API:", items);
           return acc;
         }
+
         return Object.assign(
           acc,
           Object.fromEntries(items.map((item) => [item.id, item])),
         );
-      }, {});
+      },
+      {},
+    );
 
-      logger.debug('Combined results', {
-        itemCount: Object.keys(combinedResults).length,
-      });
-
-      return { items: combinedResults };
-    } catch (error) {
-      logger.error('Error fetching bulk data:', error);
-      throw error;
-    }
+    return { items: combinedResults };
   }
 
   private async getEpicClient(): Promise<EpicGamesGraphQLClient> {
     if (!this.epicClient) {
       const authCookie = await chrome.cookies.get({
-        name: 'EPIC_EG1',
-        url: 'https://store.epicgames.com',
+        name: "EPIC_EG1",
+        url: "https://store.epicgames.com",
       });
 
       if (!authCookie?.value) {
-        throw new Error('Epic Games authentication cookie not found');
+        throw new Error("Epic Games authentication cookie not found");
       }
 
       this.epicClient = new EpicGamesGraphQLClient({
@@ -155,48 +201,46 @@ export class LibrarySyncService {
   }
 
   private async fetchLibraryPage(cursor?: string): Promise<LibraryResponse> {
-    try {
-      const client = await this.getEpicClient();
-      const authCookie = await chrome.cookies.get({
-        name: 'EPIC_EG1',
-        url: 'https://store.epicgames.com',
-      });
+    const client = await this.getEpicClient();
+    const authCookie = await chrome.cookies.get({
+      name: "EPIC_EG1",
+      url: "https://store.epicgames.com",
+    });
 
-      if (!authCookie?.value) {
-        throw new Error('Epic Games authentication cookie not found');
-      }
-
-      return await client.getLibrary({
-        token: authCookie.value,
-        includeMetadata: true,
-        cursor,
-        excludeNs: ['ue'],
-      });
-    } catch (error) {
-      logger.error('Error fetching library page:', error);
-      throw error;
+    if (!authCookie?.value) {
+      throw new Error("Epic Games authentication cookie not found");
     }
+
+    return client.getLibrary({
+      token: authCookie.value,
+      includeMetadata: true,
+      cursor,
+      excludeNs: ["ue"],
+    });
   }
 
   public async syncLibrary(library: LibraryResponse) {
+    const startedAt = new Date().toISOString();
+    await this.saveSyncMetadata({
+      ...(await this.getSyncMetadata()),
+      status: "syncing",
+      lastStartedAt: startedAt,
+      lastError: null,
+    });
+
     try {
-      logger.info('Starting library sync');
+      logger.info("Starting library sync");
 
       if (!library?.records) {
-        logger.error('Invalid library response:', library);
-        throw new Error('Invalid library response: missing records array');
+        throw new Error("Invalid library response: missing records array");
       }
 
       let allRecords = [...library.records];
       let nextCursor = library.responseMetadata.nextCursor;
 
-      // Fetch all pages
       while (nextCursor) {
-        logger.debug('Fetching next page with cursor:', nextCursor);
         const nextPage = await this.fetchLibraryPage(nextCursor);
-
         if (!nextPage?.records) {
-          logger.error('Invalid library response for next page:', nextPage);
           break;
         }
 
@@ -204,173 +248,286 @@ export class LibrarySyncService {
         nextCursor = nextPage.responseMetadata.nextCursor;
       }
 
-      logger.info(`Fetched ${allRecords.length} total records`);
-
-      // Extract item IDs from all records
-      const itemIds = allRecords
-        .map((record) => record.catalogItemId)
-        .filter(Boolean);
+      const itemIds = Array.from(
+        new Set(allRecords.map((record) => record.catalogItemId).filter(Boolean)),
+      );
 
       if (itemIds.length === 0) {
-        logger.warn('No valid item IDs found in library');
+        await this.saveSyncMetadata({
+          status: "success",
+          lastStartedAt: startedAt,
+          lastCompletedAt: new Date().toISOString(),
+          lastError: null,
+          totalItems: 0,
+          addedItemIds: [],
+          removedItemIds: [],
+          updatedItemIds: [],
+        });
         return;
       }
 
-      // Get current items from database
       const currentItems = await this.getAllItems();
-      const currentItemIds = new Set(currentItems.map((item) => item.id));
+      const currentItemsById = new Map(currentItems.map((item) => [item.id, item]));
+      const currentItemIds = new Set(currentItemsById.keys());
       const newItemIds = new Set(itemIds);
-
-      // Find items to remove (items in database but not in new library)
-      const itemsToRemove = Array.from(currentItemIds).filter(
+      const addedItemIds = itemIds.filter((id) => !currentItemIds.has(id));
+      const removedItemIds = Array.from(currentItemIds).filter(
         (id) => !newItemIds.has(id),
       );
-
-      // Remove items that are no longer owned
-      if (itemsToRemove.length > 0) {
-        logger.info(
-          `Removing ${itemsToRemove.length} items that are no longer owned`,
-        );
-        if (!this.db) {
-          throw new Error('Database not initialized');
-        }
-        const tx = this.db.transaction(this.STORE_NAME, 'readwrite');
-        const store = tx.objectStore(this.STORE_NAME);
-        await Promise.all(itemsToRemove.map((id) => store.delete(id)));
-        await tx.done;
-      }
-
-      // Fetch detailed data from bulk API
+      const recordsByItemId = this.getRecordsByItemId(allRecords);
       const bulkData = await this.fetchBulkData(itemIds);
+      const seenAt = new Date().toISOString();
 
-      // Save to IndexedDB
-      await this.saveToIndexedDB(bulkData.items);
+      const itemsWithOwnership = Object.fromEntries(
+        Object.entries(bulkData.items).map(([id, item]) => {
+          const record = recordsByItemId.get(id);
+          const previous = currentItemsById.get(id);
+          return [
+            id,
+            {
+              ...item,
+              acquisitionDate: record?.acquisitionDate ?? previous?.acquisitionDate,
+              ownedRecordType: record?.recordType ?? previous?.ownedRecordType,
+              lastSeenInLibrarySync: seenAt,
+            } satisfies LibraryItemRecord,
+          ];
+        }),
+      );
 
-      logger.success('Library sync completed successfully');
+      const updatedItemIds = Object.values(itemsWithOwnership)
+        .filter((item) => {
+          const previous = currentItemsById.get(item.id);
+          return (
+            previous &&
+            (previous.lastModifiedDate !== item.lastModifiedDate ||
+              previous.acquisitionDate !== item.acquisitionDate)
+          );
+        })
+        .map((item) => item.id);
+
+      await this.saveToIndexedDB(itemsWithOwnership);
+      await this.saveSyncMetadata({
+        status: "success",
+        lastStartedAt: startedAt,
+        lastCompletedAt: new Date().toISOString(),
+        lastError: null,
+        totalItems: itemIds.length,
+        addedItemIds,
+        removedItemIds,
+        updatedItemIds,
+      });
+
+      logger.success("Library sync completed successfully");
     } catch (error) {
-      logger.error('Error syncing library:', error);
+      const message =
+        error instanceof Error ? error.message : "Failed to sync library";
+      await this.saveSyncMetadata({
+        ...(await this.getSyncMetadata()),
+        status: "error",
+        lastError: message,
+      });
+      logger.error("Error syncing library:", error);
       throw error;
     }
+  }
+
+  private getRecordsByItemId(records: LibraryRecord[]) {
+    const recordsByItemId = new Map<string, LibraryRecord>();
+    for (const record of records) {
+      if (record.catalogItemId && !recordsByItemId.has(record.catalogItemId)) {
+        recordsByItemId.set(record.catalogItemId, record);
+      }
+    }
+    return recordsByItemId;
   }
 
   public startPeriodicSync(library: LibraryResponse) {
-    // Store the current library for future syncs
+    this.currentLibrary = library;
+    this.stopPeriodicSync();
     this.currentLibrary = library;
 
-    // Stop any existing alarm
-    this.stopPeriodicSync();
-
-    // Start new sync immediately
     this.syncLibrary(library).catch((error) => {
-      logger.error('Error in initial sync:', error);
+      logger.error("Error in initial sync:", error);
     });
 
-    // Create a new alarm
-    chrome.alarms.create('library-sync', {
-      periodInMinutes: this.SYNC_INTERVAL,
-    });
-
-    logger.debug('Started periodic library sync with alarms');
+    if (typeof chrome !== "undefined" && chrome.alarms) {
+      chrome.alarms.create("library-sync", {
+        periodInMinutes: this.SYNC_INTERVAL,
+      });
+    }
   }
 
   public stopPeriodicSync() {
-    chrome.alarms.clear('library-sync');
+    if (typeof chrome !== "undefined" && chrome.alarms) {
+      chrome.alarms.clear("library-sync");
+    }
     this.currentLibrary = null;
-    logger.debug('Stopped periodic library sync');
   }
 
-  public async getAllItems() {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    try {
-      const tx = this.db.transaction(this.STORE_NAME, 'readonly');
-      const store = tx.objectStore(this.STORE_NAME);
-      return await store.getAll();
-    } catch (error) {
-      logger.error('Error getting all items:', error);
-      throw error;
-    }
+  public async getAllItems(): Promise<LibraryItemRecord[]> {
+    const db = await this.db();
+    const tx = db.transaction(this.STORE_NAME, "readonly");
+    const store = tx.objectStore(this.STORE_NAME);
+    return (await store.getAll()) as LibraryItemRecord[];
   }
 
-  public async getItem(id: string) {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+  public async getItem(id: string): Promise<LibraryItemRecord | undefined> {
+    const db = await this.db();
+    return db.get(this.STORE_NAME, id) as Promise<LibraryItemRecord | undefined>;
+  }
 
-    try {
-      const tx = this.db.transaction(this.STORE_NAME, 'readonly');
-      const store = tx.objectStore(this.STORE_NAME);
-      return await store.get(id);
-    } catch (error) {
-      logger.error('Error getting item:', error);
-      throw error;
-    }
+  public async getLibraryChanges() {
+    const metadata = await this.getSyncMetadata();
+    const addedItems = (
+      await Promise.all(metadata.addedItemIds.map((id) => this.getItem(id)))
+    ).filter(Boolean) as LibraryItemRecord[];
+
+    return {
+      metadata,
+      addedItems,
+      removedItemIds: metadata.removedItemIds,
+      updatedItemIds: metadata.updatedItemIds,
+    };
+  }
+
+  public async getFilterOptions() {
+    const items = await this.getAllItems();
+    const values = <T,>(getter: (item: LibraryItemRecord) => T | T[] | undefined) =>
+      Array.from(
+        new Set(
+          items
+            .flatMap((item) => getter(item) ?? [])
+            .filter((value): value is T => Boolean(value)),
+        ),
+      )
+        .map(String)
+        .sort((a, b) => a.localeCompare(b));
+
+    return {
+      namespaces: values((item) => item.namespace),
+      developers: values((item) => item.developer),
+      itemTypes: values((item) => item.itemType),
+      statuses: values((item) => item.status),
+      categories: values((item) =>
+        item.categories?.map((category) => category.path),
+      ),
+      platforms: values((item) =>
+        item.releaseInfo?.flatMap((release) => release.platform),
+      ),
+    };
   }
 
   public async searchItems({
     page = 1,
     pageSize = 12,
-    searchQuery = '',
-    sortBy = 'lastModifiedDate',
-    sortOrder = 'desc',
+    searchQuery = "",
+    sortBy = "lastModifiedDate",
+    sortOrder = "desc",
+    filters = {},
   }: {
     page?: number;
     pageSize?: number;
     searchQuery?: string;
-    sortBy?: 'lastModifiedDate' | 'title';
-    sortOrder?: 'asc' | 'desc';
-  }) {
-    if (!this.db) {
-      throw new Error('Database not initialized');
+    sortBy?: "lastModifiedDate" | "title" | "acquisitionDate" | "developer";
+    sortOrder?: "asc" | "desc";
+    filters?: LibrarySearchFilters;
+  }): Promise<LibrarySearchResult> {
+    const allItems = await this.getAllItems();
+    const query = searchQuery.trim().toLowerCase();
+    let filteredItems = allItems;
+
+    if (query) {
+      filteredItems = filteredItems.filter((item) =>
+        [
+          item.title,
+          item.developer,
+          item.namespace,
+          item.itemType,
+          item.status,
+          ...item.categories.map((category) => category.path),
+        ]
+          .filter(Boolean)
+          .some((value) => value.toLowerCase().includes(query)),
+      );
     }
 
-    try {
-      const tx = this.db.transaction(this.STORE_NAME, 'readonly');
-      const store = tx.objectStore(this.STORE_NAME);
-      const allItems = await store.getAll();
+    filteredItems = filteredItems.filter((item) =>
+      this.matchesFilters(item, filters),
+    );
 
-      // Apply search filter
-      let filteredItems = allItems;
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        filteredItems = allItems.filter((item) =>
-          item.title.toLowerCase().includes(query),
-        );
-      }
+    filteredItems.sort((a, b) => {
+      const aValue = String(a[sortBy] ?? "");
+      const bValue = String(b[sortBy] ?? "");
+      const result = aValue.localeCompare(bValue);
+      return sortOrder === "asc" ? result : -result;
+    });
 
-      // Apply sorting
-      filteredItems.sort((a, b) => {
-        const aValue = a[sortBy];
-        const bValue = b[sortBy];
+    const totalItems = filteredItems.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const startIndex = (currentPage - 1) * pageSize;
+    const paginatedItems = filteredItems.slice(startIndex, startIndex + pageSize);
 
-        if (sortOrder === 'asc') {
-          return aValue > bValue ? 1 : -1;
-        }
-        return aValue < bValue ? 1 : -1;
-      });
+    return {
+      items: paginatedItems,
+      allItems: filteredItems,
+      pagination: {
+        currentPage,
+        totalPages,
+        totalItems,
+        pageSize,
+      },
+    };
+  }
 
-      // Calculate pagination
-      const totalItems = filteredItems.length;
-      const totalPages = Math.ceil(totalItems / pageSize);
-      const startIndex = (page - 1) * pageSize;
-      const endIndex = startIndex + pageSize;
-      const paginatedItems = filteredItems.slice(startIndex, endIndex);
-
-      return {
-        items: paginatedItems,
-        pagination: {
-          currentPage: page,
-          totalPages,
-          totalItems,
-          pageSize,
-        },
-      };
-    } catch (error) {
-      logger.error('Error searching items:', error);
-      throw error;
+  private matchesFilters(item: LibraryItemRecord, filters: LibrarySearchFilters) {
+    if (filters.namespace && item.namespace !== filters.namespace) {
+      return false;
     }
+    if (filters.developer && item.developer !== filters.developer) {
+      return false;
+    }
+    if (filters.itemType && item.itemType !== filters.itemType) {
+      return false;
+    }
+    if (filters.status && item.status !== filters.status) {
+      return false;
+    }
+    if (
+      filters.category &&
+      !item.categories.some((category) => category.path === filters.category)
+    ) {
+      return false;
+    }
+    if (
+      filters.platform &&
+      !item.releaseInfo.some((release) =>
+        release.platform.includes(filters.platform as string),
+      )
+    ) {
+      return false;
+    }
+
+    return (
+      this.matchesBooleanFilter(item.unsearchable, filters.unsearchable) &&
+      this.matchesBooleanFilter(item.endOfSupport, filters.endOfSupport) &&
+      this.matchesBooleanFilter(
+        item.requiresSecureAccount,
+        filters.requiresSecureAccount,
+      ) &&
+      this.matchesBooleanFilter(itemHasStorePage(item), filters.storePage)
+    );
+  }
+
+  private matchesBooleanFilter(
+    value: boolean,
+    filter: "all" | "yes" | "no" | undefined,
+  ) {
+    if (!filter || filter === "all") {
+      return true;
+    }
+
+    return filter === "yes" ? value : !value;
   }
 }
 

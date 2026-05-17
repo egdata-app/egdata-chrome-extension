@@ -4,6 +4,11 @@ import { openDB, type IDBPDatabase } from "idb";
 import { OwnedIndicator } from "./OwnedIndicator";
 import "./styles.css";
 import { EpicGamesGraphQLClient } from "@/lib/clients/epic";
+import type {
+  AppSettings,
+  OwnershipStatus,
+  OwnershipStatusResult,
+} from "@/types/egdata";
 
 const logger = consola.withTag("content-script");
 
@@ -18,6 +23,7 @@ interface OfferData {
   namespace: string | null;
   offerId: string | null;
   isOwned: boolean;
+  status: OwnershipStatus;
   lastChecked: number;
 }
 
@@ -68,14 +74,35 @@ async function updateCachedOfferData(slug: string, data: Partial<OfferData>) {
     namespace: existingData?.namespace ?? null,
     offerId: existingData?.offerId ?? null,
     isOwned: existingData?.isOwned ?? false,
+    status: existingData?.status ?? "unknown",
     lastChecked: Date.now(),
     ...data,
   };
   await saveOfferDataToDB({ [slug]: updatedData });
 }
 
+async function getSettings(): Promise<AppSettings> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action: "getSettings" }, (response) => {
+      resolve(
+        response?.settings ?? {
+          country: "US",
+          overlayEnabled: true,
+          notificationsEnabled: false,
+          freeGameRemindersEnabled: false,
+          dealAlertsEnabled: false,
+        }
+      );
+    });
+  });
+}
+
 // Function to add owned indicator to a card
-function addOwnedIndicator(card: Element, slug: string) {
+function addOwnedIndicator(
+  card: Element,
+  slug: string,
+  status: OwnershipStatus = "owned"
+) {
   if (card.querySelector(".egdata-owned-indicator")) return;
 
   // Add a data attribute to track which card this is
@@ -92,14 +119,15 @@ function addOwnedIndicator(card: Element, slug: string) {
   indicator.style.zIndex = "10";
   card.appendChild(indicator);
 
-  createRoot(indicator).render(<OwnedIndicator />);
+  createRoot(indicator).render(<OwnedIndicator status={status} />);
 }
 
 // Function to process owned slugs and update UI
 async function processOwnedSlugs(
   ownedSlugs: string[],
   currentCards: OfferCard[] = [],
-  checkedSlugs: string[] = []
+  checkedSlugs: string[] = [],
+  ownershipBySlug: Record<string, OwnershipStatus> = {}
 ) {
   logger.info(
     "Processing owned slugs:",
@@ -120,25 +148,28 @@ async function processOwnedSlugs(
     // Only update cache if this slug was actually checked
     if (checkedSlugsSet.has(card.slug)) {
       const isOwned = ownedSlugsSet.has(card.slug);
+      const status = ownershipBySlug[card.slug] ?? (isOwned ? "owned" : "not-owned");
       logger.debug(
         "Updating cache for checked slug:",
         card.slug,
         "isOwned:",
         isOwned
       );
-      await updateCachedOfferData(card.slug, { isOwned });
+      await updateCachedOfferData(card.slug, { isOwned, status });
     }
 
     // Always add indicator if owned, regardless of whether we checked it
-    if (ownedSlugsSet.has(card.slug)) {
-      logger.info("Adding owned indicator to card:", card.slug, card.element);
-      addOwnedIndicator(card.element, card.slug);
+    const status = ownershipBySlug[card.slug] ?? (ownedSlugsSet.has(card.slug) ? "owned" : "not-owned");
+    if (status !== "not-owned" && status !== "unknown") {
+      logger.info("Adding ownership indicator to card:", card.slug, status);
+      addOwnedIndicator(card.element, card.slug, status);
     }
   }
 }
 
 async function checkOwnershipDirectly(slugs: string[]): Promise<{
   ownedSlugs: string[];
+  ownershipBySlug: Record<string, OwnershipStatus>;
   offerMappings: Array<{
     slug: string;
     id: string | null;
@@ -205,11 +236,20 @@ async function checkOwnershipDirectly(slugs: string[]): Promise<{
     offers: epicOffersPayload,
   });
 
+  const ownershipStatuses = buildOwnershipStatuses(
+    epicOffersPayload,
+    validationResult.Entitlements.cartOffersValidation
+  );
+  const statusByOffer = new Map(
+    ownershipStatuses.map((result) => [
+      `${result.namespace}-${result.offerId}`,
+      result.status,
+    ])
+  );
   const ownedEpicOffersSet = new Set(
-    validationResult.Entitlements.cartOffersValidation.fullyOwnedOffers.map(
-      (ownedOffer: { offerId: string; namespace: string }) =>
-        `${ownedOffer.namespace}-${ownedOffer.offerId}`
-    )
+    ownershipStatuses
+      .filter((result) => result.status === "owned")
+      .map((result) => `${result.namespace}-${result.offerId}`)
   );
 
   const ownedSlugsResult = offerMappingsFromEgdata
@@ -220,14 +260,67 @@ async function checkOwnershipDirectly(slugs: string[]): Promise<{
   return {
     ownedSlugs: ownedSlugsResult,
     offerMappings: offerMappingsFromEgdata,
+    ownershipBySlug: Object.fromEntries(
+      offerMappingsFromEgdata
+        .filter((o) => o.id && o.namespace)
+        .map((o) => [
+          o.slug,
+          statusByOffer.get(`${o.namespace}-${o.id}`) ?? "not-owned",
+        ])
+    ),
   };
+}
+
+function buildOwnershipStatuses(
+  offers: Array<{ namespace: string; offerId: string }>,
+  validationResult: {
+    conflictingOffers?: Array<{ namespace: string; offerId: string }>;
+    missingPrerequisites?: Array<{ namespace: string; offerId: string }>;
+    fullyOwnedOffers?: Array<{ namespace: string; offerId: string }>;
+    possiblePartialUpgradeOffers?: Array<{ namespace: string; offerId: string }>;
+    unablePartiallyUpgradeOffers?: Array<{ namespace: string; offerId: string }>;
+  }
+): OwnershipStatusResult[] {
+  const statusByKey = new Map<string, OwnershipStatus>();
+  const setStatus = (
+    values: Array<{ namespace: string; offerId: string }> | undefined,
+    status: OwnershipStatus
+  ) => {
+    for (const value of values ?? []) {
+      statusByKey.set(`${value.namespace}-${value.offerId}`, status);
+    }
+  };
+
+  setStatus(validationResult.fullyOwnedOffers, "owned");
+  setStatus(validationResult.conflictingOffers, "duplicate");
+  setStatus(validationResult.possiblePartialUpgradeOffers, "partial-upgrade");
+  setStatus(validationResult.unablePartiallyUpgradeOffers, "partial-upgrade");
+  setStatus(validationResult.missingPrerequisites, "missing-prerequisite");
+
+  return offers.map((offer) => ({
+    namespace: offer.namespace,
+    offerId: offer.offerId,
+    status:
+      statusByKey.get(`${offer.namespace}-${offer.offerId}`) ?? "not-owned",
+  }));
 }
 
 async function findAndProcessOfferCards(): Promise<void> {
   logger.info("Searching for offer cards on:", window.location.href);
+  const settings = await getSettings();
+  if (!settings.overlayEnabled) {
+    clearOfferCards();
+    removeAssistantPanel();
+    logger.info("Store overlay disabled in settings");
+    return;
+  }
+
+  await processPageAssistant(settings);
+
   const currentOfferCardsThisRun: OfferCard[] = [];
   const slugsToCheck: string[] = [];
   const ownedSlugs: string[] = [];
+  const cachedOwnershipBySlug: Record<string, OwnershipStatus> = {};
 
   // Search for all types of offer cards
   const cards = document.querySelectorAll(
@@ -296,13 +389,21 @@ async function findAndProcessOfferCards(): Promise<void> {
           const cachedData = await getCachedOfferData(slug);
           logger.debug("Cache data for", slug, ":", cachedData);
 
-          if (cachedData?.isOwned) {
+          if (
+            cachedData?.status &&
+            cachedData.status !== "not-owned" &&
+            cachedData.status !== "unknown"
+          ) {
             logger.debug(
               "Found cached owned status for:",
               slug,
               "with data:",
               cachedData
             );
+            cachedOwnershipBySlug[slug] = cachedData.status;
+            ownedSlugs.push(slug);
+          } else if (cachedData?.isOwned) {
+            cachedOwnershipBySlug[slug] = "owned";
             ownedSlugs.push(slug);
           } else {
             // Only check with background script if we don't have cached data or it's expired
@@ -350,7 +451,12 @@ async function findAndProcessOfferCards(): Promise<void> {
     // Process any owned slugs we found in cache immediately
     if (ownedSlugs.length > 0) {
       logger.debug("Processing cached owned slugs:", ownedSlugs);
-      await processOwnedSlugs(ownedSlugs, currentOfferCardsThisRun, ownedSlugs);
+      await processOwnedSlugs(
+        ownedSlugs,
+        currentOfferCardsThisRun,
+        ownedSlugs,
+        cachedOwnershipBySlug
+      );
     } else {
       logger.debug("No cached owned slugs found.");
     }
@@ -358,8 +464,11 @@ async function findAndProcessOfferCards(): Promise<void> {
     if (slugsToCheck.length > 0) {
       logger.debug("Checking ownership for slugs:", slugsToCheck);
       try {
-        const { ownedSlugs: responseOwnedSlugs, offerMappings } =
-          await checkOwnershipDirectly(slugsToCheck);
+        const {
+          ownedSlugs: responseOwnedSlugs,
+          offerMappings,
+          ownershipBySlug,
+        } = await checkOwnershipDirectly(slugsToCheck);
 
         logger.info("Owned slugs determined:", responseOwnedSlugs);
 
@@ -370,6 +479,7 @@ async function findAndProcessOfferCards(): Promise<void> {
               id: mapping.id,
               namespace: mapping.namespace,
               offerId: mapping.id, // The offerId is the same as the id in this case
+              status: ownershipBySlug[mapping.slug] ?? "not-owned",
             });
           }
         }
@@ -377,7 +487,8 @@ async function findAndProcessOfferCards(): Promise<void> {
         await processOwnedSlugs(
           responseOwnedSlugs,
           currentOfferCardsThisRun,
-          slugsToCheck
+          slugsToCheck,
+          ownershipBySlug
         );
       } catch (error) {
         logger.error("Error checking ownership:", error);
@@ -399,6 +510,225 @@ function clearOfferCards() {
   // Clear the array
   offerCards.length = 0;
   logger.info("Cleared offerCards array and removed indicators from DOM");
+}
+
+const ASSISTANT_PANEL_ID = "egdata-assistant-panel";
+
+function removeAssistantPanel() {
+  document.getElementById(ASSISTANT_PANEL_ID)?.remove();
+}
+
+function statusLabel(status: OwnershipStatus) {
+  switch (status) {
+    case "owned":
+      return "Owned";
+    case "duplicate":
+      return "Duplicate";
+    case "partial-upgrade":
+      return "Upgrade/partial ownership";
+    case "missing-prerequisite":
+      return "Missing prerequisite";
+    case "not-owned":
+      return "Not owned";
+    default:
+      return "Unknown";
+  }
+}
+
+function createAssistantPanel({
+  title,
+  detail,
+  status,
+  actions = [],
+}: {
+  title: string;
+  detail: string;
+  status?: OwnershipStatus;
+  actions?: Array<{ label: string; onClick: () => void }>;
+}) {
+  removeAssistantPanel();
+  const panel = document.createElement("div");
+  panel.id = ASSISTANT_PANEL_ID;
+  panel.style.cssText = [
+    "position:fixed",
+    "right:18px",
+    "bottom:18px",
+    "z-index:2147483647",
+    "width:320px",
+    "max-width:calc(100vw - 36px)",
+    "border:1px solid rgba(255,255,255,.14)",
+    "border-radius:10px",
+    "background:#111827",
+    "color:#f9fafb",
+    "box-shadow:0 20px 40px rgba(0,0,0,.35)",
+    "font-family:Inter,system-ui,sans-serif",
+    "padding:14px",
+  ].join(";");
+
+  const badge = status
+    ? `<span style="display:inline-flex;border-radius:999px;background:rgba(59,130,246,.2);padding:2px 8px;font-size:12px;color:#bfdbfe">${statusLabel(
+        status
+      )}</span>`
+    : "";
+  panel.innerHTML = `
+    <div style="display:flex;align-items:start;justify-content:space-between;gap:10px">
+      <div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <strong style="font-size:14px">EGDATA</strong>${badge}
+        </div>
+        <div style="font-size:14px;font-weight:600;line-height:1.35">${title}</div>
+        <div style="font-size:12px;color:#9ca3af;margin-top:4px;line-height:1.45">${detail}</div>
+      </div>
+      <button type="button" aria-label="Close" style="background:transparent;border:0;color:#9ca3af;cursor:pointer;font-size:18px;line-height:1">x</button>
+    </div>
+    <div data-actions style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"></div>
+  `;
+  panel.querySelector("button")?.addEventListener("click", removeAssistantPanel);
+  const actionsNode = panel.querySelector("[data-actions]");
+  for (const action of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = action.label;
+    button.style.cssText =
+      "border:1px solid rgba(255,255,255,.16);border-radius:7px;background:#1f2937;color:#f9fafb;padding:6px 9px;font-size:12px;cursor:pointer";
+    button.addEventListener("click", action.onClick);
+    actionsNode?.appendChild(button);
+  }
+  document.body.appendChild(panel);
+}
+
+async function processPageAssistant(settings: AppSettings) {
+  const url = new URL(window.location.href);
+  if (url.pathname.includes("/purchase")) {
+    await processPurchasePage(url);
+    return;
+  }
+
+  const productSlug = url.pathname.split("/p/")[1]?.split(/[/?#]/)[0];
+  if (productSlug) {
+    await processProductPage(productSlug, settings);
+  } else {
+    removeAssistantPanel();
+  }
+}
+
+async function processProductPage(slug: string, settings: AppSettings) {
+  try {
+    const { offerMappings, ownershipBySlug } = await checkOwnershipDirectly([slug]);
+    const mapping = offerMappings.find((offer) => offer.slug === slug);
+    const status = ownershipBySlug[slug] ?? "not-owned";
+    if (!mapping?.id || !mapping.namespace) {
+      return;
+    }
+
+    createAssistantPanel({
+      title: document.title.replace(" | Download and Buy Today", ""),
+      detail:
+        status === "not-owned"
+          ? "This offer is not in your Epic library."
+          : "Ownership validation found a relevant library or purchase status.",
+      status,
+      actions: [
+        {
+          label: "Open egdata",
+          onClick: () => window.open(`https://egdata.app/offers/${mapping.id}`, "_blank"),
+        },
+        {
+          label: "Watch",
+          onClick: () => {
+            chrome.runtime.sendMessage({
+              action: "updateWatchlist",
+              payload: {
+                type: "upsert",
+                item: {
+                  offerId: mapping.id,
+                  namespace: mapping.namespace,
+                  title: document.title.split("|")[0].trim() || slug,
+                  country: settings.country,
+                  targetPrice: null,
+                  currentPrice: null,
+                  lastSeenPrice: null,
+                  lastNotifiedPrice: null,
+                  imageUrl: null,
+                  storeUrl: window.location.href,
+                  egdataUrl: `https://egdata.app/offers/${mapping.id}`,
+                },
+              },
+            });
+          },
+        },
+      ],
+    });
+  } catch (error) {
+    logger.error("Failed to process product page assistant:", error);
+  }
+}
+
+async function processPurchasePage(url: URL) {
+  const offers = url.searchParams
+    .getAll("offers")
+    .map((offer) => {
+      const [, namespace, offerId] = offer.split("-");
+      return namespace && offerId ? { namespace, offerId } : null;
+    })
+    .filter(Boolean) as Array<{ namespace: string; offerId: string }>;
+
+  if (offers.length === 0) {
+    return;
+  }
+
+  const response = await new Promise<{
+    ownershipStatuses?: OwnershipStatusResult[];
+    error?: string;
+  }>((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "getOwnedOffers", payload: { offers } },
+      (message) => resolve(message)
+    );
+  });
+
+  if (response.error) {
+    logger.warn("Purchase page ownership check failed:", response.error);
+    return;
+  }
+
+  const risky = (response.ownershipStatuses ?? []).filter(
+    (result) => result.status !== "not-owned" && result.status !== "unknown"
+  );
+  if (risky.length === 0) {
+    removeAssistantPanel();
+    return;
+  }
+
+  createAssistantPanel({
+    title: `${risky.length} purchase item${risky.length === 1 ? "" : "s"} need attention`,
+    detail:
+      "Some offers appear owned, duplicate, partial, or blocked by prerequisites.",
+    status: risky[0].status,
+    actions: [
+      {
+        label: "Remove from cart URL",
+        onClick: () => {
+          const filtered = offers.filter(
+            (offer) =>
+              !risky.some(
+                (item) =>
+                  item.namespace === offer.namespace &&
+                  item.offerId === offer.offerId
+              )
+          );
+          const nextUrl = new URL("https://store.epicgames.com/purchase");
+          for (const offer of filtered) {
+            nextUrl.searchParams.append(
+              "offers",
+              `1-${offer.namespace}-${offer.offerId}`
+            );
+          }
+          window.location.href = nextUrl.toString();
+        },
+      },
+    ],
+  });
 }
 
 // Track URL changes for client-side navigation
